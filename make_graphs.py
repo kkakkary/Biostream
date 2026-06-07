@@ -198,7 +198,10 @@ def intraday() -> Path | None:
     axes[2].set_ylim(0, 100)
     axes[2].set_title("Body battery")
 
-    axes[2].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    # Label the time axis on every panel (sharex hides upper ticks by default).
+    for ax in axes:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+        ax.tick_params(axis="x", labelbottom=True)
     axes[2].set_xlabel("Time of day (local)")
 
     GRAPH_DIR.mkdir(parents=True, exist_ok=True)
