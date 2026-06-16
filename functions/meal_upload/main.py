@@ -52,6 +52,7 @@ class FoodItem(BaseModel):
 
 
 class MealEstimate(BaseModel):
+    is_food: bool  # false if the photo is not a meal (skip logging entirely)
     items: list[FoodItem]
     carbs_g: float
     protein_g: float
@@ -63,11 +64,13 @@ class MealEstimate(BaseModel):
 
 
 PROMPT = (
-    "You are a nutrition estimator. Identify each food in this meal photo, "
-    "estimate its portion in grams, and give per-item and total macros "
-    "(carbs, protein, fat, fiber in grams) plus total calories. If portions "
-    "are ambiguous, estimate and lower your confidence. Respond only with the "
-    "required JSON schema."
+    "Look at this photo. First decide if it actually shows food/a meal a person "
+    "is about to eat. If it is NOT food (a person, screenshot, scenery, object, "
+    "abstract image, etc.), set is_food=false and leave all macros at 0. "
+    "If it IS food: set is_food=true, identify each food, estimate its portion "
+    "in grams, and give per-item and total macros (carbs, protein, fat, fiber in "
+    "grams) plus total calories; if portions are ambiguous, estimate and lower "
+    "your confidence. Respond only with the required JSON schema."
 )
 
 
@@ -101,14 +104,9 @@ def meal_upload(request):
     except ValueError:
         return (f"capture_ts not valid ISO-8601: {capture_ts!r}", 400)
 
-    # --- store photo in GCS (per-user prefix) ---
     img_bytes = _resize_jpeg(file.read())
-    blob_name = f"{user_id}/inbox/{capture_dt.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-    bucket = _storage.bucket(BUCKET.replace("gs://", ""))
-    bucket.blob(blob_name).upload_from_string(img_bytes, content_type="image/jpeg")
-    gcs_uri = f"gs://{BUCKET.replace('gs://', '')}/{blob_name}"
 
-    # --- Gemini Vision -> structured macros ---
+    # --- Gemini Vision first: is this even a meal? ---
     resp = _genai.models.generate_content(
         model=GEMINI_MODEL,
         contents=[
@@ -122,6 +120,21 @@ def meal_upload(request):
         ),
     )
     est: MealEstimate = resp.parsed
+
+    # Non-food photo: skip storage AND BigQuery so stray shots can't pollute data.
+    if not est.is_food or not est.items:
+        return (
+            json.dumps({"status": "skipped", "reason": "not a meal — nothing logged",
+                        "detail": est.notes}),
+            200,
+            {"Content-Type": "application/json"},
+        )
+
+    # --- it's a meal: store photo in GCS (per-user prefix) ---
+    blob_name = f"{user_id}/inbox/{capture_dt.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+    bucket = _storage.bucket(BUCKET.replace("gs://", ""))
+    bucket.blob(blob_name).upload_from_string(img_bytes, content_type="image/jpeg")
+    gcs_uri = f"gs://{BUCKET.replace('gs://', '')}/{blob_name}"
 
     # --- write row to BigQuery (fully timestamped) ---
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
