@@ -1,0 +1,15 @@
+[
+  {"name": "user_id",            "type": "STRING",    "mode": "REQUIRED", "description": "Which person this reading belongs to"},
+  {"name": "measurement_date",   "type": "DATE",      "mode": "REQUIRED", "description": "Local calendar date of the reading (used for date partitioning)"},
+  {"name": "measurement_ts_utc", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "Exact reading timestamp in UTC"},
+  {"name": "tz_offset_minutes",  "type": "INTEGER",   "mode": "NULLABLE", "description": "User's UTC offset at time of reading (raw API seconds ÷ 60)"},
+  {"name": "systolic",           "type": "INTEGER",   "mode": "REQUIRED", "description": "Systolic blood pressure (mmHg)"},
+  {"name": "diastolic",          "type": "INTEGER",   "mode": "REQUIRED", "description": "Diastolic blood pressure (mmHg)"},
+  {"name": "pulse",              "type": "INTEGER",   "mode": "REQUIRED", "description": "Pulse rate (bpm)"},
+  {"name": "irregular_hb",       "type": "BOOLEAN",   "mode": "NULLABLE", "description": "Irregular heartbeat detected — lower reading quality"},
+  {"name": "movement_detect",    "type": "BOOLEAN",   "mode": "NULLABLE", "description": "Body movement detected — lower reading quality"},
+  {"name": "cuff_wrap_detect",   "type": "BOOLEAN",   "mode": "NULLABLE", "description": "Cuff wrap error detected — lower reading quality"},
+  {"name": "notes",              "type": "STRING",    "mode": "NULLABLE", "description": "Free-text notes from the Omron Connect app"},
+  {"name": "ingested_ts",        "type": "TIMESTAMP", "mode": "NULLABLE", "description": "When the pipeline stored this row"},
+  {"name": "raw",                "type": "JSON",      "mode": "NULLABLE", "description": "Full Omron API payload for this reading (lossless, future-proof)"}
+]
