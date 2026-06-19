@@ -107,6 +107,8 @@ PAGE = """<!doctype html>
   <input id="photo" type="file" accept="image/*" capture="environment">
   <img id="preview" alt="preview">
   <textarea id="notes" placeholder="…or just describe the meal (e.g. '2 eggs, 2 slices toast with butter'). A photo, a description, or both — either works."></textarea>
+  <label for="when" style="display:block;margin-top:14px;font-size:.9rem;color:#5a6b63">When did you eat this? <span style="font-weight:400">(leave blank for “now”)</span></label>
+  <input id="when" type="datetime-local" style="width:100%;margin-top:6px;padding:12px;border:1px solid #cdd6d2;border-radius:12px;font-size:1rem;font-family:inherit">
   <button id="send" class="primary" disabled>Send</button>
   <div id="status"></div>
 
@@ -120,7 +122,10 @@ PAGE = """<!doctype html>
   const photo = document.getElementById('photo');
   const preview = document.getElementById('preview');
   const notes = document.getElementById('notes');
+  const when = document.getElementById('when');
   const send = document.getElementById('send');
+  // chosen meal time, or now if left blank (datetime-local is local time)
+  function captureTs() { return when.value ? new Date(when.value).toISOString() : new Date().toISOString(); }
   const status = document.getElementById('status');
   const savedBox = document.getElementById('saved');
   let lastMeal = null;
@@ -143,7 +148,7 @@ PAGE = """<!doctype html>
     const fd = new FormData();
     if (photo.files.length) fd.append('image', photo.files[0]);
     fd.append('notes', notes.value || '');
-    fd.append('capture_ts', new Date().toISOString());
+    fd.append('capture_ts', captureTs());
     try {
       const r = await fetch(base + '/submit', { method:'POST', body:fd });
       const d = await r.json();
@@ -160,7 +165,8 @@ PAGE = """<!doctype html>
     } catch (e) {
       status.innerHTML = `<div class="card err">Network error. Please try again.</div>`;
     }
-    photo.value = ''; preview.style.display='none'; notes.value='';
+    photo.value = ''; preview.style.display='none'; notes.value=''; when.value='';
+    refreshSend();
   });
 
   function macroCard(m, withSave) {
@@ -193,7 +199,7 @@ PAGE = """<!doctype html>
     btn.disabled = true; btn.textContent = 'Logging…';
     const r = await fetch(base + '/log-saved', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ saved_meal_id:id, capture_ts:new Date().toISOString() })
+      body: JSON.stringify({ saved_meal_id:id, capture_ts:captureTs() })
     });
     const d = await r.json();
     btn.disabled = false; btn.textContent = 'Log again';
