@@ -103,10 +103,10 @@ PAGE = """<!doctype html>
   <h1>📸 Log a meal</h1>
   <p class="who">Logging as <strong>__USER__</strong></p>
 
-  <label class="cam" for="photo">Take a photo of your meal</label>
+  <label class="cam" for="photo">📷 Take a photo <span style="font-weight:400;font-size:.9rem">(optional)</span></label>
   <input id="photo" type="file" accept="image/*" capture="environment">
   <img id="preview" alt="preview">
-  <textarea id="notes" placeholder="Optional: describe it (e.g. '6oz grilled chicken, 1 cup brown rice, olive oil') — makes the estimate more accurate"></textarea>
+  <textarea id="notes" placeholder="…or just describe the meal (e.g. '2 eggs, 2 slices toast with butter'). A photo, a description, or both — either works."></textarea>
   <button id="send" class="primary" disabled>Send</button>
   <div id="status"></div>
 
@@ -125,20 +125,23 @@ PAGE = """<!doctype html>
   const savedBox = document.getElementById('saved');
   let lastMeal = null;
 
+  function refreshSend() { send.disabled = !(photo.files.length || notes.value.trim()); }
   photo.addEventListener('change', () => {
-    if (!photo.files.length) return;
-    preview.src = URL.createObjectURL(photo.files[0]);
-    preview.style.display = 'block';
-    send.disabled = false;
+    if (photo.files.length) {
+      preview.src = URL.createObjectURL(photo.files[0]);
+      preview.style.display = 'block';
+    }
     status.innerHTML = '';
+    refreshSend();
   });
+  notes.addEventListener('input', refreshSend);
 
   send.addEventListener('click', async () => {
-    if (!photo.files.length) return;
+    if (!photo.files.length && !notes.value.trim()) return;
     send.disabled = true;
     status.innerHTML = '<span class="spinner"></span>Analyzing your meal…';
     const fd = new FormData();
-    fd.append('image', photo.files[0]);
+    if (photo.files.length) fd.append('image', photo.files[0]);
     fd.append('notes', notes.value || '');
     fd.append('capture_ts', new Date().toISOString());
     try {
@@ -241,16 +244,15 @@ def page(link_token: str):
 def submit(link_token: str):
     user = _user_for(link_token)
     file = request.files.get("image")
-    if file is None:
-        return Response(json.dumps({"status": "error"}), 400, mimetype="application/json")
+    notes = request.form.get("notes", "")
+    if file is None and not notes.strip():
+        return Response(json.dumps({"status": "error", "reason": "photo or description required"}),
+                        400, mimetype="application/json")
     capture_ts = request.form.get("capture_ts") or dt.datetime.now(dt.timezone.utc).isoformat()
-    resp = requests.post(
-        MEAL_UPLOAD_URL,
-        files={"image": (file.filename or "meal.jpg", file.read(), file.mimetype or "image/jpeg")},
-        data={"user_id": user, "capture_ts": capture_ts, "token": UPLOAD_TOKEN,
-              "notes": request.form.get("notes", "")},
-        timeout=120,
-    )
+    data = {"user_id": user, "capture_ts": capture_ts, "token": UPLOAD_TOKEN, "notes": notes}
+    files = ({"image": (file.filename or "meal.jpg", file.read(), file.mimetype or "image/jpeg")}
+             if file is not None else None)
+    resp = requests.post(MEAL_UPLOAD_URL, files=files, data=data, timeout=120)
     return Response(resp.text, status=resp.status_code, mimetype="application/json")
 
 

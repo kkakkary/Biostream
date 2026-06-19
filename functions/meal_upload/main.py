@@ -64,13 +64,15 @@ class MealEstimate(BaseModel):
 
 
 PROMPT = (
-    "Look at this photo. First decide if it actually shows food/a meal a person "
-    "is about to eat. If it is NOT food (a person, screenshot, scenery, object, "
-    "abstract image, etc.), set is_food=false and leave all macros at 0. "
-    "If it IS food: set is_food=true, identify each food, estimate its portion "
-    "in grams, and give per-item and total macros (carbs, protein, fat, fiber in "
-    "grams) plus total calories; if portions are ambiguous, estimate and lower "
-    "your confidence. Respond only with the required JSON schema."
+    "Estimate the nutrition of a meal from the photo and/or text description "
+    "provided below. First decide if this actually shows or describes food a "
+    "person is eating. If it is NOT food, or it is far too vague to estimate "
+    "(e.g. a person, scenery, an object, or an empty/meaningless description), "
+    "set is_food=false and leave all macros at 0. If it IS food: set is_food=true, "
+    "identify each food, estimate its portion in grams, and give per-item and total "
+    "macros (carbs, protein, fat, fiber in grams) plus total calories; if portions "
+    "are ambiguous, estimate and lower your confidence. Respond only with the "
+    "required JSON schema."
 )
 
 
@@ -94,9 +96,11 @@ def meal_upload(request):
     # --- required fields ---
     user_id = (request.form.get("user_id") or "").strip().lower()
     capture_ts = (request.form.get("capture_ts") or "").strip()
+    notes = (request.form.get("notes") or "").strip()
     file = request.files.get("image")
-    if not user_id or not capture_ts or file is None:
-        return ("missing required field: user_id, capture_ts, and image", 400)
+    # A meal needs at least one of: a photo OR a text description.
+    if not user_id or not capture_ts or (file is None and not notes):
+        return ("need user_id, capture_ts, and at least a photo or a description", 400)
     try:
         # Normalise to a UTC ISO timestamp BigQuery accepts.
         capture_dt = dt.datetime.fromisoformat(capture_ts.replace("Z", "+00:00"))
@@ -104,17 +108,16 @@ def meal_upload(request):
     except ValueError:
         return (f"capture_ts not valid ISO-8601: {capture_ts!r}", 400)
 
-    notes = (request.form.get("notes") or "").strip()
-    img_bytes = _resize_jpeg(file.read())
+    img_bytes = _resize_jpeg(file.read()) if file is not None else None
 
-    # --- Gemini Vision first: is this even a meal? ---
-    contents = [types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"), PROMPT]
+    # --- Gemini: is this even a meal? (works from photo, text, or both) ---
+    contents = []
+    if img_bytes is not None:
+        contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+    contents.append(PROMPT)
     if notes:
-        contents.append(
-            f'The person describes this meal as: "{notes}". Trust this description '
-            "to identify foods, brands, and preparation, and to refine portion sizes "
-            "and macros — especially where the photo alone is ambiguous."
-        )
+        contents.append(f'The person describes the meal as: "{notes}". Trust this '
+                        "description to identify foods, brands, and portions.")
     resp = _genai.models.generate_content(
         model=GEMINI_MODEL,
         contents=contents,
@@ -126,7 +129,7 @@ def meal_upload(request):
     )
     est: MealEstimate = resp.parsed
 
-    # Non-food photo: skip storage AND BigQuery so stray shots can't pollute data.
+    # Non-food / too-vague: skip storage AND BigQuery so junk can't pollute data.
     if not est.is_food or not est.items:
         return (
             json.dumps({"status": "skipped", "reason": "not a meal — nothing logged",
@@ -135,11 +138,13 @@ def meal_upload(request):
             {"Content-Type": "application/json"},
         )
 
-    # --- it's a meal: store photo in GCS (per-user prefix) ---
-    blob_name = f"{user_id}/inbox/{capture_dt.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-    bucket = _storage.bucket(BUCKET.replace("gs://", ""))
-    bucket.blob(blob_name).upload_from_string(img_bytes, content_type="image/jpeg")
-    gcs_uri = f"gs://{BUCKET.replace('gs://', '')}/{blob_name}"
+    # --- it's a meal: store the photo in GCS if one was provided ---
+    gcs_uri = None
+    if img_bytes is not None:
+        blob_name = f"{user_id}/inbox/{capture_dt.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+        bucket = _storage.bucket(BUCKET.replace("gs://", ""))
+        bucket.blob(blob_name).upload_from_string(img_bytes, content_type="image/jpeg")
+        gcs_uri = f"gs://{BUCKET.replace('gs://', '')}/{blob_name}"
 
     # --- write row to BigQuery (fully timestamped) ---
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -160,7 +165,7 @@ def meal_upload(request):
         "user_corrected": False,
         "notes": est.notes,
         "user_notes": notes or None,
-        "source": "photo",
+        "source": "photo" if img_bytes is not None else "text",
     }
     errors = _bq.insert_rows_json(f"{PROJECT}.{BQ_DATASET}.{BQ_TABLE}", [row])
     if errors:
