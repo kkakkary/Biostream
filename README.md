@@ -69,7 +69,8 @@ ingestion/
 functions/
   meal_upload/      photo/description -> Gemini -> BigQuery meals
   meal_web/         phone web app (notes, saved meals, time picker)
-  garmin_sync/      daily Garmin baseline poll -> BigQuery garmin_daily
+  garmin_sync/          daily Garmin wellness poll -> garmin_daily
+  garmin_intraday_sync/ 15-min Garmin intraday poll -> garmin_intraday
 ```
 
 ## What's built vs. pending
@@ -77,8 +78,10 @@ functions/
 - ✅ Infra-as-code (`infra/setup.sh`), BigQuery schemas, user config
 - ✅ Meal logging: `meal-upload` + `meal-web` (photo and/or description, saved
   meals, optional meal time) → `meals`
-- ✅ Garmin baseline → BigQuery: `garmin-sync` Cloud Function on a daily Cloud
-  Scheduler job (`garmin-daily`, 08:00 PT) → `garmin_daily`, per user
+- ✅ Garmin daily wellness → `garmin-sync` (daily `garmin-daily` job) → `garmin_daily`
+- ✅ Garmin **intraday** (heart rate, stress, body battery, respiration) →
+  `garmin-intraday-sync` (15-min `garmin-intraday` job) → `garmin_intraday`,
+  UTC timestamps to align with glucose + meals
 - ⏳ CGM poller (`ingestion/cgm/`) once a sensor is chosen → `glucose`
 - ⏳ Feature builder (window CGM per meal) + per-user model training
 
