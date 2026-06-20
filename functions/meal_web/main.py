@@ -372,7 +372,7 @@ def connect_page(link_token: str):
     body = f"""<h1>⌚ Connect Garmin</h1>
     <p class="muted">Hi <strong>{user}</strong> — sign in once to link your Garmin
     account. Your password is used only to connect and is never stored.</p>
-    <form method="POST" action="start" class="card">
+    <form method="POST" action="/connect/{link_token}/start" class="card">
       <input name="email" type="email" placeholder="Garmin email" autocomplete="username" required>
       <input name="password" type="password" placeholder="Garmin password" autocomplete="current-password" required>
       <button type="submit">Connect</button>
@@ -397,7 +397,7 @@ def connect_start(link_token: str):
             body = f"""<h1>⌚ Enter your code</h1>
             <p class="muted">Garmin sent a verification code to <strong>{user}</strong>'s
             email/phone. Enter it to finish connecting.</p>
-            <form method="POST" action="mfa" class="card">
+            <form method="POST" action="/connect/{link_token}/mfa" class="card">
               <input type="hidden" name="state" value="{state}">
               <input name="code" inputmode="numeric" placeholder="6-digit code" required>
               <button type="submit">Verify &amp; connect</button>
