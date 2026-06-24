@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
 import json
 import os
 import uuid
 
+import httpx
 import requests
 from flask import Flask, Response, abort, request
 from garminconnect import Garmin
@@ -38,6 +40,10 @@ MEALS = f"{PROJECT}.{BQ_DATASET}.meals"
 SAVED = f"{PROJECT}.{BQ_DATASET}.saved_meals"
 
 
+_OMRON_SERVER = "https://vlt-mobile-api.prd.us.ohiomron.com/prd"
+_OMRON_USER_AGENT = "OmronConnect/3 CFNetwork/1410.0.3 Darwin/22.6.0"
+
+
 def _store_garmin_token(user: str, token: str) -> None:
     """Save (or update) the user's Garmin token as garmin-token-<user>."""
     secret_id = f"garmin-token-{user}"
@@ -48,6 +54,38 @@ def _store_garmin_token(user: str, token: str) -> None:
         _sm.create_secret(parent=f"projects/{PROJECT}", secret_id=secret_id,
                            secret={"replication": {"automatic": {}}})
     _sm.add_secret_version(parent=parent, payload={"data": token.encode()})
+
+
+def _store_omron_token(user: str, tokens: dict) -> None:
+    """Save (or update) the user's Omron tokens as omron-token-<user>."""
+    secret_id = f"omron-token-{user}"
+    parent = f"projects/{PROJECT}/secrets/{secret_id}"
+    try:
+        _sm.get_secret(name=parent)
+    except Exception:
+        _sm.create_secret(parent=f"projects/{PROJECT}", secret_id=secret_id,
+                           secret={"replication": {"automatic": {}}})
+    _sm.add_secret_version(parent=parent, payload={"data": json.dumps(tokens).encode()})
+
+
+def _omron_checksum_hook(req: httpx.Request) -> None:
+    if req.method in ("POST", "DELETE") and req.content:
+        req.headers["Checksum"] = hashlib.sha256(req.content).hexdigest()
+
+
+def _omron_login(email: str, password: str, country: str = "US") -> dict:
+    """Authenticate to Omron Connect, return {email, accessToken, refreshToken}."""
+    with httpx.Client(
+        event_hooks={"request": [_omron_checksum_hook]},
+        headers={"user-agent": _OMRON_USER_AGENT},
+    ) as client:
+        r = client.post(
+            f"{_OMRON_SERVER}/login",
+            json={"emailAddress": email, "password": password, "country": country, "app": "OCM"},
+        )
+        r.raise_for_status()
+    resp = r.json()
+    return {"email": email, "accessToken": resp["accessToken"], "refreshToken": resp["refreshToken"]}
 
 
 def _user_for(link_token: str) -> str:
@@ -347,11 +385,11 @@ def log_saved(link_token: str):
 # The password is used only for this login and never stored; only the
 # resulting (auto-refreshing) token is saved to garmin-token-<user>.
 # --------------------------------------------------------------------------- #
-def _connect_shell(body: str) -> str:
+def _connect_shell(body: str, title: str = "Connect Garmin") -> str:
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Connect Garmin</title>
+<title>{title}</title>
 <style>
   body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
          background:#f4f6f5; color:#15211c; }}
@@ -430,4 +468,58 @@ def connect_mfa(link_token: str):
 def _connect_success(user: str) -> str:
     return f"""<div class="card"><h1>✅ Garmin connected</h1>
     <p class="muted">Thanks {user} — your Garmin data will start syncing automatically.
+    You can close this page.</p></div>"""
+
+
+# --------------------------------------------------------------------------- #
+# Connect Omron — one-time, phone-friendly account link (same personal link).
+# The password is used only for this login and never stored; only the
+# resulting {accessToken, refreshToken} JSON is saved to omron-token-<user>.
+# No MFA step — Omron Connect returns tokens directly on credential login.
+# --------------------------------------------------------------------------- #
+@app.get("/connect-omron/<link_token>")
+def connect_omron_page(link_token: str):
+    user = _user_for(link_token)
+    body = f"""<h1>🩺 Connect Omron</h1>
+    <p class="muted">Hi <strong>{user}</strong> — sign in once to link your Omron Connect
+    account. Your password is used only to connect and is never stored.</p>
+    <form method="POST" action="/connect-omron/{link_token}/start" class="card">
+      <input name="email" type="email" placeholder="Omron Connect email" autocomplete="username" required>
+      <input name="password" type="password" placeholder="Omron Connect password" autocomplete="current-password" required>
+      <button type="submit">Connect</button>
+    </form>"""
+    return Response(_connect_shell(body, title="Connect Omron"), mimetype="text/html")
+
+
+@app.post("/connect-omron/<link_token>/start")
+def connect_omron_start(link_token: str):
+    user = _user_for(link_token)
+    email = (request.form.get("email") or "").strip()
+    password = request.form.get("password") or ""
+    if not email or not password:
+        return Response(
+            _connect_shell('<div class="card err">Email and password required.</div>',
+                           title="Connect Omron"), 400, mimetype="text/html")
+    try:
+        tokens = _omron_login(email, password)
+        _store_omron_token(user, tokens)
+        return Response(
+            _connect_shell(_omron_connect_success(user), title="Connect Omron"),
+            mimetype="text/html")
+    except httpx.HTTPStatusError as exc:
+        msg = ("Couldn't sign in — check the email/password and try again."
+               if exc.response.status_code in (401, 403)
+               else "Omron Connect returned an error. Please try again.")
+        return Response(
+            _connect_shell(f'<div class="card err">{msg}</div>', title="Connect Omron"),
+            400, mimetype="text/html")
+    except Exception:
+        return Response(
+            _connect_shell('<div class="card err">Couldn\'t reach Omron Connect. Please try again.</div>',
+                           title="Connect Omron"), 400, mimetype="text/html")
+
+
+def _omron_connect_success(user: str) -> str:
+    return f"""<div class="card"><h1>✅ Omron connected</h1>
+    <p class="muted">Thanks {user} — your blood pressure data will start syncing automatically.
     You can close this page.</p></div>"""
