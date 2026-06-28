@@ -507,13 +507,15 @@ def connect_omron_start(link_token: str):
             _connect_shell(_omron_connect_success(user), title="Connect Omron"),
             mimetype="text/html")
     except httpx.HTTPStatusError as exc:
+        print(f"[connect-omron] HTTP error for user={user}: {exc.response.status_code} {exc.response.text[:200]}")
         msg = ("Couldn't sign in — check the email/password and try again."
                if exc.response.status_code in (401, 403)
                else "Omron Connect returned an error. Please try again.")
         return Response(
             _connect_shell(f'<div class="card err">{msg}</div>', title="Connect Omron"),
             400, mimetype="text/html")
-    except Exception:
+    except Exception as exc:
+        print(f"[connect-omron] Unexpected error for user={user}: {type(exc).__name__}: {exc}")
         return Response(
             _connect_shell('<div class="card err">Couldn\'t reach Omron Connect. Please try again.</div>',
                            title="Connect Omron"), 400, mimetype="text/html")
