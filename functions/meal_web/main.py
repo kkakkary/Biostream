@@ -85,6 +85,8 @@ def _omron_login(email: str, password: str, country: str = "US") -> dict:
         )
         r.raise_for_status()
     resp = r.json()
+    if "accessToken" not in resp:
+        print(f"[omron-login] Unexpected response (no accessToken): {resp}")
     return {"email": email, "accessToken": resp["accessToken"], "refreshToken": resp["refreshToken"]}
 
 
