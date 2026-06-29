@@ -115,6 +115,7 @@ def _fetch_bp(client: httpx.Client, tokens: dict, since_ms: int) -> list[dict]:
         resp = r.json()
         page: list[dict] = resp.get("data") or []
         if not page:
+            print(f"[fetch-bp] empty data for pagination_key={pagination_key} since_ms={since_ms} resp={resp}")
             break
         readings.extend(page)
         next_key = resp.get("nextpaginationKey")
