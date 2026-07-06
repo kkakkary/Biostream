@@ -1,0 +1,103 @@
+name: Deploy
+
+# Deploy each service to Google Cloud on merge to main — but only the
+# service(s) whose source actually changed. Auth uses Workload Identity
+# Federation (no long-lived service-account keys).
+#
+# Redeploys are code-only: no --set-env-vars / --set-secrets / --trigger are
+# passed, so each service keeps its existing env vars, secrets, and triggers.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'functions/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:        # allow manual runs (deploys everything)
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+env:
+  PROJECT: digitaltwin-499202
+  REGION: us-central1
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      garmin_sync: ${{ steps.f.outputs.garmin_sync }}
+      garmin_intraday_sync: ${{ steps.f.outputs.garmin_intraday_sync }}
+      meal_upload: ${{ steps.f.outputs.meal_upload }}
+      meal_web: ${{ steps.f.outputs.meal_web }}
+      omron_sync: ${{ steps.f.outputs.omron_sync }}
+      upload_photo: ${{ steps.f.outputs.upload_photo }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          # On manual runs there is no diff base, so force everything true.
+          filters: |
+            garmin_sync: 'functions/garmin_sync/**'
+            garmin_intraday_sync: 'functions/garmin_intraday_sync/**'
+            meal_upload: 'functions/meal_upload/**'
+            meal_web: 'functions/meal_web/**'
+            omron_sync: 'functions/omron_sync/**'
+            upload_photo: 'functions/upload_photo/**'
+
+  deploy:
+    needs: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # required for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/663692868459/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deploy@digitaltwin-499202.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # --- gen2 Cloud Functions (code-only redeploys) -----------------------
+      - name: garmin-sync
+        if: ${{ needs.changes.outputs.garmin_sync == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy garmin-sync --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/garmin_sync --runtime=python312 --entry-point=garmin_sync
+
+      - name: garmin-intraday-sync
+        if: ${{ needs.changes.outputs.garmin_intraday_sync == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy garmin-intraday-sync --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/garmin_intraday_sync --runtime=python312 --entry-point=garmin_intraday_sync
+
+      - name: meal-upload
+        if: ${{ needs.changes.outputs.meal_upload == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy meal-upload --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/meal_upload --runtime=python312 --entry-point=meal_upload
+
+      - name: omron-sync
+        if: ${{ needs.changes.outputs.omron_sync == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy omron-sync --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/omron_sync --runtime=python312 --entry-point=omron_sync
+
+      - name: upload_photo
+        if: ${{ needs.changes.outputs.upload_photo == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy upload_photo --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/upload_photo --runtime=python311 --entry-point=upload_photo
+
+      # --- Cloud Run service from source (buildpacks / Procfile) ------------
+      - name: meal-web
+        if: ${{ needs.changes.outputs.meal_web == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud run deploy meal-web --source=functions/meal_web \
+            --region="$REGION" --project="$PROJECT" --quiet
