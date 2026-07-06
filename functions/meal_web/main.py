@@ -38,6 +38,7 @@ _bq = bigquery.Client(project=PROJECT)
 _sm = secretmanager.SecretManagerServiceClient()
 MEALS = f"{PROJECT}.{BQ_DATASET}.meals"
 SAVED = f"{PROJECT}.{BQ_DATASET}.saved_meals"
+GARMIN_DAILY = f"{PROJECT}.{BQ_DATASET}.garmin_daily"
 
 
 _OMRON_SERVER = "https://vlt-mobile-api.prd.us.ohiomron.com/prd"
@@ -106,6 +107,27 @@ def fetch_saved(user: str) -> list[dict]:
     return [dict(r) for r in job.result()]
 
 
+# --------------------------------------------------------------------------- #
+# Medications — logged manually into garmin_daily (Garmin has no med data).
+# Keyed by (user_id, date); the daily garmin-sync preserves these across
+# re-syncs (see garmin_sync._existing_meds), so logging here is durable.
+# --------------------------------------------------------------------------- #
+def _valid_date(s: str) -> str:
+    """Accept only a YYYY-MM-DD calendar date (guards the DML below)."""
+    return dt.date.fromisoformat((s or "").strip()).isoformat()
+
+
+def fetch_meds(user: str, date: str) -> list[dict]:
+    """Return the medications logged for this (user, date), in log order."""
+    q = f"""SELECT m.name AS name, m.dose AS dose
+            FROM `{GARMIN_DAILY}`, UNNEST(medications) AS m
+            WHERE user_id=@u AND date=@d"""
+    job = _bq.query(q, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("u", "STRING", user),
+        bigquery.ScalarQueryParameter("d", "DATE", date)]))
+    return [dict(r) for r in job.result()]
+
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -166,6 +188,14 @@ PAGE = """<!doctype html>
   <input id="when" type="datetime-local" style="width:100%;margin-top:6px;padding:12px;border:1px solid #cdd6d2;border-radius:12px;font-size:1rem;font-family:inherit">
   <button id="send" class="primary" disabled>Send</button>
   <div id="status"></div>
+
+  <h2>💊 Medications</h2>
+  <label for="medDate" style="display:block;font-size:.9rem;color:#5a6b63">Day</label>
+  <input id="medDate" type="date" style="width:100%;margin-top:6px;padding:12px;border:1px solid #cdd6d2;border-radius:12px;font-size:1rem;font-family:inherit">
+  <input id="medName" type="text" placeholder="Medication (e.g. Metformin)" style="width:100%;margin-top:10px;padding:12px;border:1px solid #cdd6d2;border-radius:12px;font-size:1rem;font-family:inherit">
+  <input id="medDose" type="text" placeholder="Dose (e.g. 500mg) — optional" style="width:100%;margin-top:10px;padding:12px;border:1px solid #cdd6d2;border-radius:12px;font-size:1rem;font-family:inherit">
+  <button id="medBtn" class="primary" style="background:#0b7">💊 Log medication</button>
+  <div id="medList" style="margin-top:12px"></div>
 
   <h2>⭐ Your saved meals</h2>
   <div id="saved"></div>
@@ -273,6 +303,53 @@ PAGE = """<!doctype html>
       </div>`).join('');
   }
   renderSaved();
+
+  // ----- Medications ------------------------------------------------------
+  const medDate = document.getElementById('medDate');
+  const medName = document.getElementById('medName');
+  const medDose = document.getElementById('medDose');
+  const medBtn = document.getElementById('medBtn');
+  const medList = document.getElementById('medList');
+  const esc = s => (s || '').replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  medDate.value = new Date().toLocaleDateString('en-CA');  // YYYY-MM-DD, local
+
+  function renderMeds(meds) {
+    if (!meds.length) { medList.innerHTML = '<p class="muted">Nothing logged for this day.</p>'; return; }
+    medList.innerHTML = meds.map((m, i) => `<div class="card saved-row">
+        <div><span class="name">${esc(m.name)}</span>${m.dose ? ` <span class="muted">${esc(m.dose)}</span>` : ''}</div>
+        <button class="ghost" onclick="removeMed(${i})" aria-label="Remove">✕</button>
+      </div>`).join('');
+  }
+  async function loadMeds() {
+    medList.innerHTML = '<p class="muted">Loading…</p>';
+    try {
+      const r = await fetch(base + '/meds?date=' + encodeURIComponent(medDate.value));
+      const d = await r.json();
+      renderMeds(d.medications || []);
+    } catch (e) { medList.innerHTML = '<p class="muted err">Couldn’t load medications.</p>'; }
+  }
+  async function logMed() {
+    const name = medName.value.trim();
+    if (!name) return;
+    medBtn.disabled = true; medBtn.textContent = 'Logging…';
+    try {
+      const r = await fetch(base + '/log-med', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ name, dose: medDose.value.trim(), date: medDate.value }) });
+      const d = await r.json();
+      if (d.status === 'ok') { medName.value = ''; medDose.value = ''; renderMeds(d.medications || []); }
+    } catch (e) {}
+    medBtn.disabled = false; medBtn.textContent = '💊 Log medication';
+  }
+  async function removeMed(i) {
+    const r = await fetch(base + '/remove-med', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ date: medDate.value, index: i }) });
+    const d = await r.json();
+    if (d.status === 'ok') renderMeds(d.medications || []);
+  }
+  medBtn.addEventListener('click', logMed);
+  medDate.addEventListener('change', loadMeds);
+  loadMeds();
 </script>
 </body>
 </html>"""
@@ -379,6 +456,77 @@ def log_saved(link_token: str):
         return Response(json.dumps({"status": "error", "details": errors}), 500,
                         mimetype="application/json")
     return Response(json.dumps({"status": "ok", "name": s.get("name")}),
+                    mimetype="application/json")
+
+
+@app.get("/m/<link_token>/meds")
+def list_meds(link_token: str):
+    user = _user_for(link_token)
+    try:
+        date = _valid_date(request.args.get("date", ""))
+    except ValueError:
+        return Response(json.dumps({"status": "error", "reason": "bad date"}), 400,
+                        mimetype="application/json")
+    return Response(json.dumps({"status": "ok", "medications": fetch_meds(user, date)}),
+                    mimetype="application/json")
+
+
+@app.post("/m/<link_token>/log-med")
+def log_med(link_token: str):
+    user = _user_for(link_token)
+    b = request.get_json(force=True, silent=True) or {}
+    name = (b.get("name") or "").strip()
+    dose = (b.get("dose") or "").strip()
+    if not name:
+        return Response(json.dumps({"status": "error", "reason": "name required"}), 400,
+                        mimetype="application/json")
+    try:
+        date = _valid_date(b.get("date", ""))
+    except ValueError:
+        return Response(json.dumps({"status": "error", "reason": "bad date"}), 400,
+                        mimetype="application/json")
+    # Append to the day's medications, creating the row if the day has none yet.
+    # Garmin-derived columns on an existing row are left untouched.
+    _bq.query(
+        f"""MERGE `{GARMIN_DAILY}` T
+            USING (SELECT @u AS user_id, @d AS date) S
+            ON T.user_id = S.user_id AND T.date = S.date
+            WHEN MATCHED THEN UPDATE SET medications =
+                ARRAY_CONCAT(T.medications, [STRUCT(@name AS name, @dose AS dose)])
+            WHEN NOT MATCHED THEN INSERT (user_id, date, medications)
+                VALUES (S.user_id, S.date, [STRUCT(@name AS name, @dose AS dose)])""",
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("u", "STRING", user),
+            bigquery.ScalarQueryParameter("d", "DATE", date),
+            bigquery.ScalarQueryParameter("name", "STRING", name),
+            bigquery.ScalarQueryParameter("dose", "STRING", dose or None)]),
+    ).result()
+    return Response(json.dumps({"status": "ok", "medications": fetch_meds(user, date)}),
+                    mimetype="application/json")
+
+
+@app.post("/m/<link_token>/remove-med")
+def remove_med(link_token: str):
+    user = _user_for(link_token)
+    b = request.get_json(force=True, silent=True) or {}
+    try:
+        date = _valid_date(b.get("date", ""))
+        idx = int(b.get("index"))
+    except (ValueError, TypeError):
+        return Response(json.dumps({"status": "error", "reason": "bad input"}), 400,
+                        mimetype="application/json")
+    # Drop the medication at position `idx`, preserving the rest and the row.
+    _bq.query(
+        f"""UPDATE `{GARMIN_DAILY}`
+            SET medications = ARRAY(
+                SELECT m FROM UNNEST(medications) AS m WITH OFFSET off WHERE off != @i)
+            WHERE user_id=@u AND date=@d""",
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("u", "STRING", user),
+            bigquery.ScalarQueryParameter("d", "DATE", date),
+            bigquery.ScalarQueryParameter("i", "INT64", idx)]),
+    ).result()
+    return Response(json.dumps({"status": "ok", "medications": fetch_meds(user, date)}),
                     mimetype="application/json")
 
 

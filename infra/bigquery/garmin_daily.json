@@ -12,5 +12,11 @@
   {"name": "hrv_avg",          "type": "INTEGER","mode": "NULLABLE", "description": "HRV status avg (populates after several nights of wear)"},
   {"name": "total_kcal",       "type": "INTEGER","mode": "NULLABLE"},
   {"name": "active_kcal",      "type": "INTEGER","mode": "NULLABLE"},
+  {"name": "weight_lbs",       "type": "FLOAT",  "mode": "NULLABLE", "description": "Body weight in pounds, from Garmin body composition (smart scale or manual log)"},
+  {"name": "medications",      "type": "RECORD", "mode": "REPEATED", "description": "Medications taken this day (manually logged; not from Garmin). Preserved across daily re-syncs.",
+    "fields": [
+      {"name": "name", "type": "STRING", "mode": "NULLABLE", "description": "Medication name"},
+      {"name": "dose", "type": "STRING", "mode": "NULLABLE", "description": "Dose, e.g. '500mg', '2 tablets'"}
+    ]},
   {"name": "raw",              "type": "JSON",   "mode": "NULLABLE", "description": "Full per-metric Garmin payloads for this day (lossless, future-proof)"}
 ]

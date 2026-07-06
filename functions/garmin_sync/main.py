@@ -61,11 +61,28 @@ def _int(x):
     return int(round(x)) if isinstance(x, (int, float)) else None
 
 
+_GRAMS_PER_LB = 453.59237
+
+
+def _weight_lbs(bc: dict) -> float | None:
+    """Extract body weight (lbs) from Garmin's body-composition payload.
+
+    Garmin returns weight in grams under totalAverage; fall back to the most
+    recent per-day entry. Returns None on days with no weigh-in.
+    """
+    grams = (bc.get("totalAverage") or {}).get("weight")
+    if not isinstance(grams, (int, float)):
+        entries = bc.get("dateWeightList") or []
+        grams = entries[-1].get("weight") if entries else None
+    return round(grams / _GRAMS_PER_LB, 1) if isinstance(grams, (int, float)) else None
+
+
 def _row(user: str, date: str, g: Garmin) -> dict | None:
     us = _safe(lambda: g.get_user_summary(date)) or {}
     sleep = (_safe(lambda: g.get_sleep_data(date)) or {}).get("dailySleepDTO") or {}
     hrv = _safe(lambda: g.get_hrv_data(date)) or {}
     hrv_sum = (hrv or {}).get("hrvSummary") or {}
+    bc = _safe(lambda: g.get_body_composition(date, date)) or {}
     row = {
         "user_id": user,
         "date": date,
@@ -80,18 +97,49 @@ def _row(user: str, date: str, g: Garmin) -> dict | None:
         "hrv_avg": _int(hrv_sum.get("lastNightAvg")),
         "total_kcal": _int(us.get("totalKilocalories")),
         "active_kcal": _int(us.get("activeKilocalories")),
-        "raw": {"user_summary": us, "sleep": sleep, "hrv": hrv},
+        "weight_lbs": _weight_lbs(bc),
+        # Manually logged; populated by _upsert from any existing row (never from Garmin).
+        "medications": [],
+        "raw": {"user_summary": us, "sleep": sleep, "hrv": hrv, "body_composition": bc},
     }
     # Skip days with no meaningful data (watch not worn, not yet synced).
+    # weight_lbs counts: a standalone weigh-in is worth a row on its own.
     if all(row[k] is None for k in
-           ("total_steps", "resting_hr", "sleep_seconds", "hrv_avg")):
+           ("total_steps", "resting_hr", "sleep_seconds", "hrv_avg", "weight_lbs")):
         return None
     return row
+
+
+def _existing_meds(user: str, dates: list[str]) -> dict[str, list[dict]]:
+    """Medications already stored for these (user, date) rows, keyed by date.
+
+    Medications are logged manually, not pulled from Garmin, so they must
+    survive the delete-and-reload below — otherwise each daily sync would wipe
+    them. Read them first, then carry them into the freshly built rows.
+    """
+    job = _bq.query(
+        f"SELECT date, medications FROM `{TABLE}` "
+        "WHERE user_id=@u AND date IN UNNEST(@d)",
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("u", "STRING", user),
+            bigquery.ArrayQueryParameter("d", "DATE", dates)]),
+    )
+    out: dict[str, list[dict]] = {}
+    for r in job.result():
+        meds = [{"name": m.get("name"), "dose": m.get("dose")}
+                for m in (r["medications"] or [])]
+        if meds:
+            out[r["date"].isoformat()] = meds
+    return out
 
 
 def _upsert(user: str, rows: list[dict]) -> None:
     """Delete the (user, date) rows, then load the fresh ones (idempotent)."""
     dates = [r["date"] for r in rows]
+    # Preserve any manually-logged medications before the delete clobbers them.
+    meds = _existing_meds(user, dates)
+    for r in rows:
+        r["medications"] = meds.get(r["date"], [])
     _bq.query(
         f"DELETE FROM `{TABLE}` WHERE user_id=@u AND date IN UNNEST(@d)",
         job_config=bigquery.QueryJobConfig(query_parameters=[
