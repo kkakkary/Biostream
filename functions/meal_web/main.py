@@ -189,6 +189,9 @@ PAGE = """<!doctype html>
   <button id="send" class="primary" disabled>Send</button>
   <div id="status"></div>
 
+  <h2>⭐ Your saved meals</h2>
+  <div id="saved"></div>
+
   <h2>💊 Medications</h2>
   <label for="medDate" style="display:block;font-size:.9rem;color:#5a6b63">Day</label>
   <input id="medDate" type="date" style="width:100%;margin-top:6px;padding:12px;border:1px solid #cdd6d2;border-radius:12px;font-size:1rem;font-family:inherit">
@@ -196,9 +199,6 @@ PAGE = """<!doctype html>
   <input id="medDose" type="text" placeholder="Dose (e.g. 500mg) — optional" style="width:100%;margin-top:10px;padding:12px;border:1px solid #cdd6d2;border-radius:12px;font-size:1rem;font-family:inherit">
   <button id="medBtn" class="primary" style="background:#0b7">💊 Log medication</button>
   <div id="medList" style="margin-top:12px"></div>
-
-  <h2>⭐ Your saved meals</h2>
-  <div id="saved"></div>
 </div>
 
 <script>
