@@ -1,0 +1,6 @@
+[
+  {"name": "user_id",    "type": "STRING",   "mode": "REQUIRED", "description": "Which person this HRV reading belongs to"},
+  {"name": "sleep_date", "type": "DATE",     "mode": "REQUIRED", "description": "Calendar date of the sleep night (matches garmin_daily.date); groups a night's readings"},
+  {"name": "ts",         "type": "TIMESTAMP","mode": "REQUIRED", "description": "Reading timestamp (UTC). Garmin samples overnight HRV about every 5 minutes during sleep"},
+  {"name": "hrv_value",  "type": "INTEGER",  "mode": "NULLABLE", "description": "HRV (RMSSD) for this ~5-min window, in milliseconds"}
+]

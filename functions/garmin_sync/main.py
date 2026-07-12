@@ -5,6 +5,9 @@ cached Garmin token from Secret Manager (no password/MFA needed — see README),
 pulls the last DAYS_BACK days of daily wellness + sleep + HRV, and idempotently
 upserts one row per (user, date) into garmin_daily.
 
+It also flattens the overnight HRV series (one value ~every 5 min during sleep)
+into per-reading rows in hrv_readings, for datapoint-level HRV tracking.
+
 Idempotent + Preview-friendly: deletes the (user, date) rows it's about to
 write, then loads via a BigQuery load job (committed storage, not streaming).
 """
@@ -23,6 +26,7 @@ PROJECT = os.environ["PROJECT"]
 DATASET = os.environ.get("BQ_DATASET", "health_twin")
 DAYS_BACK = int(os.environ.get("DAYS_BACK", "2"))
 TABLE = f"{PROJECT}.{DATASET}.garmin_daily"
+HRV_READINGS = f"{PROJECT}.{DATASET}.hrv_readings"
 
 _bq = bigquery.Client(project=PROJECT)
 _sm = secretmanager.SecretManagerServiceClient()
@@ -77,10 +81,33 @@ def _weight_lbs(bc: dict) -> float | None:
     return round(grams / _GRAMS_PER_LB, 1) if isinstance(grams, (int, float)) else None
 
 
-def _row(user: str, date: str, g: Garmin) -> dict | None:
+def _reading_ts(gmt: str | None) -> str | None:
+    """Parse Garmin's overnight-HRV reading time ('2026-07-11T10:41:35.0', GMT)
+    into an ISO UTC timestamp string for BigQuery."""
+    if not gmt:
+        return None
+    try:
+        return (dt.datetime.strptime(gmt[:19], "%Y-%m-%dT%H:%M:%S")
+                .replace(tzinfo=dt.timezone.utc).isoformat())
+    except Exception:
+        return None
+
+
+def _hrv_readings(user: str, date: str, hrv: dict) -> list[dict]:
+    """Flatten Garmin's overnight HRV series (~one value per 5 min during sleep)
+    into per-reading rows for the hrv_readings table."""
+    out = []
+    for r in (hrv.get("hrvReadings") or []):
+        ts = _reading_ts(r.get("readingTimeGMT"))
+        val = r.get("hrvValue")
+        if ts and isinstance(val, (int, float)):
+            out.append({"user_id": user, "sleep_date": date, "ts": ts, "hrv_value": int(val)})
+    return out
+
+
+def _row(user: str, date: str, g: Garmin, hrv: dict) -> dict | None:
     us = _safe(lambda: g.get_user_summary(date)) or {}
     sleep = (_safe(lambda: g.get_sleep_data(date)) or {}).get("dailySleepDTO") or {}
-    hrv = _safe(lambda: g.get_hrv_data(date)) or {}
     hrv_sum = (hrv or {}).get("hrvSummary") or {}
     bc = _safe(lambda: g.get_body_composition(date, date)) or {}
     row = {
@@ -152,6 +179,21 @@ def _upsert(user: str, rows: list[dict]) -> None:
     ).result()
 
 
+def _upsert_readings(user: str, dates: list[str], rows: list[dict]) -> None:
+    """Idempotently replace the overnight HRV datapoints for these (user, night)
+    dates: delete the affected sleep_dates, then load the fresh readings."""
+    _bq.query(
+        f"DELETE FROM `{HRV_READINGS}` WHERE user_id=@u AND sleep_date IN UNNEST(@d)",
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("u", "STRING", user),
+            bigquery.ArrayQueryParameter("d", "DATE", dates)]),
+    ).result()
+    _bq.load_table_from_json(
+        rows, HRV_READINGS,
+        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
+    ).result()
+
+
 @functions_framework.http
 def garmin_sync(request):
     # ?days=N overrides the default window (handy for backfilling history).
@@ -162,11 +204,19 @@ def garmin_sync(request):
         try:
             g = Garmin()
             g.login(_token(user))
-            rows = [r for d in dates if (r := _row(user, d, g)) is not None]
+            rows, readings = [], []
+            for d in dates:
+                hrv = _safe(lambda: g.get_hrv_data(d)) or {}
+                r = _row(user, d, g, hrv)
+                if r is not None:
+                    rows.append(r)
+                readings.extend(_hrv_readings(user, d, hrv))
             if rows:
                 _upsert(user, rows)
-            out[user] = len(rows)
+            if readings:  # only touch nights we actually got readings for
+                _upsert_readings(user, sorted({r["sleep_date"] for r in readings}), readings)
+            out[user] = {"days": len(rows), "hrv_readings": len(readings)}
         except Exception as exc:  # one user's failure must not abort the rest
             out[user] = f"error: {type(exc).__name__}: {exc}"
-    return (json.dumps({"status": "ok", "dates": dates, "rows_per_user": out}),
+    return (json.dumps({"status": "ok", "dates": dates, "per_user": out}),
             200, {"Content-Type": "application/json"})
