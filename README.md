@@ -105,7 +105,7 @@ secrets (no admin), so the public web service can write/discover tokens but
 cannot read or delete them.
 
 Backfill history any time: `GET garmin-sync?days=N` (default 2 days).
-Connected: **kevin** (christian/vince: secrets staged, awaiting their login).
+Connected: **kevin** (christian/vincent: secrets staged, awaiting their login).
 
 ## Privacy notes
 

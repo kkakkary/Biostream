@@ -1,7 +1,7 @@
 """Pull CGM glucose readings via a LibreLinkUp collector account.
 
 A single "collector" LibreLinkUp account receives sharing invites from all
-sensor wearers (Christian, Kevin, Vince). This script authenticates as that
+sensor wearers (Christian, Kevin, Vincent). This script authenticates as that
 collector and pulls the ~12 h glucose graph for every connected patient.
 
 Setup (one-time per sensor wearer):

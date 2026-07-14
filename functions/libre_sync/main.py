@@ -1,7 +1,7 @@
 """libre-sync: CGM glucose readings from LibreLinkUp collector account → BigQuery.
 
 One "collector" LibreLinkUp account receives sharing invites from all sensor
-wearers (Christian, Kevin, Vince). This function authenticates as the collector,
+wearers (Christian, Kevin, Vincent). This function authenticates as the collector,
 fetches the connections list, pulls the ~12 h glucose graph for each patient,
 and idempotently upserts rows into health_twin.glucose.
 
