@@ -31,6 +31,7 @@ jobs:
       garmin_intraday_sync: ${{ steps.f.outputs.garmin_intraday_sync }}
       meal_upload: ${{ steps.f.outputs.meal_upload }}
       meal_web: ${{ steps.f.outputs.meal_web }}
+      health_dashboard: ${{ steps.f.outputs.health_dashboard }}
       omron_sync: ${{ steps.f.outputs.omron_sync }}
       upload_photo: ${{ steps.f.outputs.upload_photo }}
     steps:
@@ -44,6 +45,7 @@ jobs:
             garmin_intraday_sync: 'functions/garmin_intraday_sync/**'
             meal_upload: 'functions/meal_upload/**'
             meal_web: 'functions/meal_web/**'
+            health_dashboard: 'functions/health_dashboard/**'
             omron_sync: 'functions/omron_sync/**'
             upload_photo: 'functions/upload_photo/**'
 
@@ -101,3 +103,11 @@ jobs:
         run: |
           gcloud run deploy meal-web --source=functions/meal_web \
             --region="$REGION" --project="$PROJECT" --quiet
+
+      # Public showcase dashboard (read-only BigQuery, no secrets).
+      - name: health-dashboard
+        if: ${{ needs.changes.outputs.health_dashboard == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud run deploy health-dashboard --source=functions/health_dashboard \
+            --region="$REGION" --project="$PROJECT" --quiet \
+            --allow-unauthenticated --memory=1Gi --max-instances=2 --session-affinity

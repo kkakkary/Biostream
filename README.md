@@ -64,6 +64,7 @@ functions/
   libre_sync/        LibreLinkUp CGM poll -> glucose
   omron_sync/        daily Omron blood-pressure poll -> blood_pressure
   upload_photo/      helper: push an image to Google Photos
+  health_dashboard/  public Streamlit dashboard (Cloud Run) showcasing one subject's data
 notebooks/           Jupyter analyses over the BigQuery data (see notebooks/README.md)
 .github/workflows/   CI/CD: deploy changed services to GCP on merge to main (WIF, no keys)
 ```
