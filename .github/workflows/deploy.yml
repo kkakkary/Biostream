@@ -32,6 +32,7 @@ jobs:
       meal_upload: ${{ steps.f.outputs.meal_upload }}
       meal_web: ${{ steps.f.outputs.meal_web }}
       omron_sync: ${{ steps.f.outputs.omron_sync }}
+      libre_sync: ${{ steps.f.outputs.libre_sync }}
       upload_photo: ${{ steps.f.outputs.upload_photo }}
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +46,7 @@ jobs:
             meal_upload: 'functions/meal_upload/**'
             meal_web: 'functions/meal_web/**'
             omron_sync: 'functions/omron_sync/**'
+            libre_sync: 'functions/libre_sync/**'
             upload_photo: 'functions/upload_photo/**'
 
   deploy:
@@ -88,6 +90,12 @@ jobs:
         run: |
           gcloud functions deploy omron-sync --gen2 --region="$REGION" --project="$PROJECT" \
             --source=functions/omron_sync --runtime=python312 --entry-point=omron_sync
+
+      - name: libre-sync
+        if: ${{ needs.changes.outputs.libre_sync == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy libre-sync --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/libre_sync --runtime=python312 --entry-point=libre_sync
 
       - name: upload_photo
         if: ${{ needs.changes.outputs.upload_photo == 'true' || github.event_name == 'workflow_dispatch' }}
