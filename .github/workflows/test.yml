@@ -1,0 +1,29 @@
+name: Tests
+
+# Run the Python test suites on every pull request (and on pushes to main,
+# so the badge/history stays honest). Deploys are gated separately in
+# deploy.yml — this workflow is the fast PR feedback loop.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dashboard dependencies
+        run: |
+          pip install -r functions/health_dashboard/requirements.txt pytest
+
+      - name: Run test suites
+        run: |
+          python -m pytest functions/ -v
