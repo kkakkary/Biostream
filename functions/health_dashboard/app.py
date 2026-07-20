@@ -25,10 +25,9 @@ def _table(df, label="View as table"):
 
 st.title("Kevin — Biostream health dashboard")
 st.caption(
-    "A live N-of-1 study feed: Garmin wearable + FreeStyle Libre CGM + Omron "
-    "blood-pressure cuff → scheduled Cloud Functions → BigQuery → this page. "
-    "Data refreshes automatically; every chart below is the subject's own "
-    "measurements, not a mockup."
+    "A live feed: Garmin wearable + FreeStyle Libre CGM + Omron "
+    "Wearable/Sensor/Device → scheduled Cloud Functions → BigQuery → this page. "
+    "Data refreshes automatically; every chart below is the subject(Me)'s own data"
 )
 
 choice = st.segmented_control("Date range", options=list(RANGES),
