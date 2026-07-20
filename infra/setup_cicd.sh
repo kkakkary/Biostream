@@ -10,7 +10,7 @@ set -euo pipefail
 
 PROJECT="digitaltwin-499202"
 PROJECT_NUMBER="663692868459"
-REPO="kkakkary/digitaltwin"          # GitHub owner/repo allowed to deploy
+REPO="kkakkary/Biostream"            # GitHub owner/repo allowed to deploy
 SA_NAME="github-deploy"
 SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 RUNTIME_SAS=(
