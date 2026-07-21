@@ -1,0 +1,5 @@
+functions-framework==3.*
+garminconnect>=0.3.5
+curl_cffi
+google-cloud-bigquery>=3.25.0
+google-cloud-secret-manager>=2.20.0

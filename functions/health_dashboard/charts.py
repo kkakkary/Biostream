@@ -148,6 +148,78 @@ def intraday_fig(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+EXERCISE_BAND = "rgba(235, 104, 52, 0.12)"  # translucent orange wash
+
+
+def meal_timeline_fig(glucose: pd.DataFrame, intraday: pd.DataFrame,
+                      activities: pd.DataFrame, bp: pd.DataFrame,
+                      meal_ts, baseline: float | None) -> go.Figure:
+    """Single Meal view: CGM + heart rate, one shared time axis, meal start +
+    exercise windows + next-morning BP drawn as overlays."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.10,
+                        row_heights=[0.55, 0.45],
+                        subplot_titles=["Glucose (CGM)", "Heart rate"])
+
+    lo, hi = GLUCOSE_RANGE_MG_DL
+    fig.add_hrect(y0=lo, y1=hi, fillcolor=BAND, line_width=0, layer="below", row=1, col=1)
+    if baseline is not None:
+        fig.add_hline(y=baseline, line=dict(color=MUTED, width=1, dash="dot"), row=1, col=1)
+    g = break_time_gaps(glucose, "ts", pd.Timedelta(minutes=30))
+    fig.add_trace(go.Scatter(x=g["ts"], y=g["glucose_mg_dl"], mode="lines",
+                             line=dict(color=BLUE, width=2),
+                             hovertemplate="%{y:.0f} mg/dL<extra></extra>"), row=1, col=1)
+
+    hr = break_time_gaps(intraday.dropna(subset=["heart_rate"]), "ts", pd.Timedelta(hours=1))
+    fig.add_trace(go.Scatter(x=hr["ts"], y=hr["heart_rate"], mode="lines",
+                             line=dict(color=RED, width=2),
+                             hovertemplate="%{y:.0f} bpm<extra></extra>"), row=2, col=1)
+
+    fig.add_vline(x=meal_ts, line=dict(color=INK_2, width=2, dash="dash"),
+                 annotation_text="Meal", annotation_position="top",
+                 annotation_font=dict(color=INK_2, size=11), row="all", col="all")
+
+    for _, a in activities.iterrows():
+        end = a["end_ts"] if pd.notna(a["end_ts"]) else a["start_ts"]
+        fig.add_vrect(x0=a["start_ts"], x1=end, fillcolor=EXERCISE_BAND, line_width=0,
+                     annotation_text=a["activity_type"] or "Exercise",
+                     annotation_position="top left",
+                     annotation_font=dict(color=ORANGE, size=10), row="all", col="all")
+
+    for _, r in bp.iterrows():
+        fig.add_vline(x=r["measurement_ts_utc"], line=dict(color=GREEN, width=1, dash="dot"),
+                     annotation_text=f"BP {r['systolic']:.0f}/{r['diastolic']:.0f}",
+                     annotation_position="bottom right",
+                     annotation_font=dict(color=GREEN, size=10), row=1, col=1)
+
+    fig = _layout(fig, height=520, top=28)
+    fig.update_yaxes(title_text="mg/dL", title_font=dict(color=MUTED), row=1, col=1)
+    fig.update_yaxes(title_text="bpm", title_font=dict(color=MUTED), row=2, col=1)
+    fig.update_annotations(font=dict(color=INK_2, size=13))
+    return fig
+
+
+def paired_cgm_overlay_fig(window_a: pd.DataFrame, window_b: pd.DataFrame,
+                           label_a: str, label_b: str) -> go.Figure:
+    """Paired Meal Experiment overlay: both meals' CGM excursions on a shared
+    'minutes since meal' axis so the two curves are directly comparable."""
+    fig = go.Figure()
+    lo, hi = GLUCOSE_RANGE_MG_DL
+    fig.add_hrect(y0=lo, y1=hi, fillcolor=BAND, line_width=0, layer="below")
+    for window, label, color in [(window_a, label_a, BLUE), (window_b, label_b, ORANGE)]:
+        if window.empty:
+            continue
+        minutes = (window["ts"] - window["ts"].iloc[0]).dt.total_seconds() / 60
+        fig.add_trace(go.Scatter(x=minutes, y=window["glucose_mg_dl"], mode="lines",
+                                 name=label, line=dict(color=color, width=2),
+                                 hovertemplate="%{y:.0f} mg/dL<extra>" + label + "</extra>"))
+    fig = _layout(fig, height=380)
+    fig.update_layout(showlegend=True)
+    fig.update_xaxes(title_text="minutes since meal", title_font=dict(color=MUTED))
+    fig.update_yaxes(title_text="mg/dL", title_font=dict(color=MUTED))
+    return fig
+
+
 def bp_fig(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     for name, col, color in [("Systolic", "systolic", BLUE),

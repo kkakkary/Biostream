@@ -90,6 +90,7 @@ mk_table meals        "${HERE}/bigquery/meals.json"        capture_ts DAY
 mk_table glucose      "${HERE}/bigquery/glucose.json"      ts         DAY
 mk_table garmin_daily "${HERE}/bigquery/garmin_daily.json" date       DAY
 mk_table hrv_readings "${HERE}/bigquery/hrv_readings.json" sleep_date DAY
+mk_table garmin_activities "${HERE}/bigquery/garmin_activities.json" start_ts DAY
 
 # --------------------------------------------------------------------------- #
 # 4. Service account for the pipeline (functions run as this)

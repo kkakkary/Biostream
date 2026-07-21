@@ -29,6 +29,7 @@ jobs:
     outputs:
       garmin_sync: ${{ steps.f.outputs.garmin_sync }}
       garmin_intraday_sync: ${{ steps.f.outputs.garmin_intraday_sync }}
+      garmin_activity_sync: ${{ steps.f.outputs.garmin_activity_sync }}
       meal_upload: ${{ steps.f.outputs.meal_upload }}
       meal_web: ${{ steps.f.outputs.meal_web }}
       health_dashboard: ${{ steps.f.outputs.health_dashboard }}
@@ -44,6 +45,7 @@ jobs:
           filters: |
             garmin_sync: 'functions/garmin_sync/**'
             garmin_intraday_sync: 'functions/garmin_intraday_sync/**'
+            garmin_activity_sync: 'functions/garmin_activity_sync/**'
             meal_upload: 'functions/meal_upload/**'
             meal_web: 'functions/meal_web/**'
             health_dashboard: 'functions/health_dashboard/**'
@@ -93,6 +95,17 @@ jobs:
           gcloud functions deploy garmin-intraday-sync --gen2 --region="$REGION" --project="$PROJECT" \
             --source=functions/garmin_intraday_sync --runtime=python312 --entry-point=garmin_intraday_sync
 
+      - name: garmin-activity-sync
+        if: ${{ needs.changes.outputs.garmin_activity_sync == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          # --service-account is explicit here (unlike the other functions) because
+          # this is a first-ever deploy: with no prior manual deploy to inherit a
+          # runtime SA from, an omitted flag would default to the Compute SA, which
+          # can't read garmin-token-* secrets or write to BigQuery.
+          gcloud functions deploy garmin-activity-sync --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/garmin_activity_sync --runtime=python312 --entry-point=garmin_activity_sync \
+            --service-account=twin-pipeline@digitaltwin-499202.iam.gserviceaccount.com
+
       - name: meal-upload
         if: ${{ needs.changes.outputs.meal_upload == 'true' || github.event_name == 'workflow_dispatch' }}
         run: |
@@ -124,10 +137,12 @@ jobs:
           gcloud run deploy meal-web --source=functions/meal_web \
             --region="$REGION" --project="$PROJECT" --quiet
 
-      # Public showcase dashboard (read-only BigQuery, no secrets).
+      # Private post-prandial experiment dashboard (meal photos + clinical
+      # stats). --no-allow-unauthenticated actively revokes the allUsers
+      # binding left over from its earlier life as a public showcase page.
       - name: health-dashboard
         if: ${{ needs.changes.outputs.health_dashboard == 'true' || github.event_name == 'workflow_dispatch' }}
         run: |
           gcloud run deploy health-dashboard --source=functions/health_dashboard \
             --region="$REGION" --project="$PROJECT" --quiet \
-            --allow-unauthenticated --memory=1Gi --max-instances=2 --session-affinity
+            --no-allow-unauthenticated --memory=1Gi --max-instances=2 --session-affinity

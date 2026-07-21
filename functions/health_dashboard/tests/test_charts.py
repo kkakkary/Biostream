@@ -41,6 +41,39 @@ def test_bp_fig_has_one_trace_per_series():
     assert fig.layout.showlegend is True
 
 
+def test_meal_timeline_fig_marks_exercise_and_bp():
+    meal_ts = pd.Timestamp("2026-07-18 19:00", tz="UTC")
+    times = pd.date_range(meal_ts - pd.Timedelta(hours=1), meal_ts + pd.Timedelta(hours=3), freq="15min")
+    glucose = pd.DataFrame({"ts": times, "glucose_mg_dl": [100.0] * len(times)})
+    intraday = pd.DataFrame({"ts": times, "heart_rate": [70.0] * len(times)})
+    activities = pd.DataFrame({
+        "activity_id": [1], "activity_type": ["walking"], "activity_name": ["walk"],
+        "start_ts": [meal_ts + pd.Timedelta(hours=1)],
+        "end_ts": [meal_ts + pd.Timedelta(hours=1, minutes=30)],
+    })
+    bp = pd.DataFrame({"measurement_ts_utc": [meal_ts + pd.Timedelta(hours=14)],
+                       "systolic": [120], "diastolic": [78]})
+
+    fig = charts.meal_timeline_fig(glucose, intraday, activities, bp, meal_ts, baseline=95.0)
+
+    # 2 line traces (CGM, HR) + exercise shading is a shape, not a trace.
+    assert len(fig.data) == 2
+    assert any(s.fillcolor == charts.EXERCISE_BAND for s in fig.layout.shapes)
+
+
+def test_paired_cgm_overlay_fig_uses_minutes_since_meal_axis():
+    meal_ts = pd.Timestamp("2026-07-18 19:00", tz="UTC")
+    window = pd.DataFrame({
+        "ts": [meal_ts, meal_ts + pd.Timedelta(minutes=30)],
+        "glucose_mg_dl": [100.0, 150.0],
+    })
+
+    fig = charts.paired_cgm_overlay_fig(window, window, "No exercise", "With exercise")
+
+    assert [t.name for t in fig.data] == ["No exercise", "With exercise"]
+    assert list(fig.data[0].x) == [0.0, 30.0]  # minutes since meal, not wall-clock
+
+
 def test_sleep_fig_stacks_three_stages():
     df = pd.DataFrame({
         "date": pd.to_datetime(["2026-07-18"]),

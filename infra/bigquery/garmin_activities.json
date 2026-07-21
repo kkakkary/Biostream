@@ -1,0 +1,14 @@
+[
+  {"name": "user_id",           "type": "STRING",    "mode": "REQUIRED", "description": "Which person this activity belongs to"},
+  {"name": "activity_id",       "type": "INTEGER",   "mode": "REQUIRED", "description": "Garmin's unique activityId; used as the idempotency key for re-syncs"},
+  {"name": "activity_type",     "type": "STRING",    "mode": "NULLABLE", "description": "Garmin activity type key, e.g. walking, running, strength_training"},
+  {"name": "activity_name",     "type": "STRING",    "mode": "NULLABLE", "description": "User/Garmin-assigned activity name"},
+  {"name": "start_ts",          "type": "TIMESTAMP", "mode": "REQUIRED", "description": "Activity start time (UTC)"},
+  {"name": "end_ts",            "type": "TIMESTAMP", "mode": "NULLABLE", "description": "Activity end time (UTC) = start_ts + duration_seconds"},
+  {"name": "duration_seconds",  "type": "INTEGER",   "mode": "NULLABLE", "description": "Activity duration in seconds"},
+  {"name": "distance_m",        "type": "FLOAT",     "mode": "NULLABLE", "description": "Distance covered in meters, when applicable"},
+  {"name": "calories",          "type": "INTEGER",   "mode": "NULLABLE", "description": "Estimated calories burned during the activity"},
+  {"name": "avg_hr",            "type": "INTEGER",   "mode": "NULLABLE", "description": "Average heart rate during the activity"},
+  {"name": "max_hr",            "type": "INTEGER",   "mode": "NULLABLE", "description": "Max heart rate during the activity"},
+  {"name": "raw",               "type": "JSON",      "mode": "NULLABLE", "description": "Full Garmin activity payload, lossless"}
+]
