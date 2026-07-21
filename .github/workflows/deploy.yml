@@ -104,7 +104,8 @@ jobs:
           # can't read garmin-token-* secrets or write to BigQuery.
           gcloud functions deploy garmin-activity-sync --gen2 --region="$REGION" --project="$PROJECT" \
             --source=functions/garmin_activity_sync --runtime=python312 --entry-point=garmin_activity_sync \
-            --service-account=twin-pipeline@digitaltwin-499202.iam.gserviceaccount.com
+            --service-account=twin-pipeline@digitaltwin-499202.iam.gserviceaccount.com \
+            --trigger-http
 
       - name: meal-upload
         if: ${{ needs.changes.outputs.meal_upload == 'true' || github.event_name == 'workflow_dispatch' }}
