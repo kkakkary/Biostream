@@ -17,7 +17,6 @@ GCP project: `digitaltwin-499202` · region: `us-central1`
 | Source | How it's ingested | BigQuery table(s) |
 |---|---|---|
 | **Garmin** daily wellness (sleep, steps, weight, …) | `garmin-sync` Cloud Function, daily scheduled poll | `garmin_daily` |
-| **Garmin** intraday (heart rate, stress, body battery, respiration) | `garmin-intraday-sync`, 15-min scheduled poll, UTC timestamps | `garmin_intraday` |
 | **Garmin** overnight HRV datapoints | recorded during the daily sync | `hrv_readings` |
 | **CGM glucose** (FreeStyle Libre) | `libre-sync` polls a LibreLinkUp collector account | `glucose` |
 | **Blood pressure** (Omron) | `omron-sync`, daily poll of Omron Connect | `blood_pressure` |
@@ -31,10 +30,9 @@ GCP project: `digitaltwin-499202` · region: `us-central1`
                                                                  ├─ Vertex AI Gemini → macros JSON
                                                                  └─► BigQuery meals / saved_meals
 
- Cloud Scheduler ─► garmin-sync (daily)        ─► garmin_daily, hrv_readings
-                 ─► garmin-intraday-sync (15m) ─► garmin_intraday
-                 ─► libre-sync                 ─► glucose
-                 ─► omron-sync                 ─► blood_pressure
+ Cloud Scheduler ─► garmin-sync (daily) ─► garmin_daily, hrv_readings
+                 ─► libre-sync          ─► glucose
+                 ─► omron-sync          ─► blood_pressure
 
  BigQuery dataset health_twin  (all tables date-partitioned, clustered by user_id)
         │
@@ -60,7 +58,6 @@ functions/
   meal_upload/       photo/description -> Gemini -> BigQuery meals
   meal_web/          phone web app (meal logging, saved meals, time picker, Garmin connect)
   garmin_sync/       daily Garmin wellness poll -> garmin_daily + hrv_readings
-  garmin_intraday_sync/  15-min Garmin intraday poll -> garmin_intraday
   libre_sync/        LibreLinkUp CGM poll -> glucose
   omron_sync/        daily Omron blood-pressure poll -> blood_pressure
   upload_photo/      helper: push an image to Google Photos

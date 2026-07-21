@@ -1,8 +1,0 @@
-[
-  {"name": "user_id",      "type": "STRING",    "mode": "REQUIRED", "description": "Which person this reading belongs to"},
-  {"name": "ts",           "type": "TIMESTAMP", "mode": "REQUIRED", "description": "Reading time (UTC) — aligns with glucose + meal timestamps"},
-  {"name": "heart_rate",   "type": "INTEGER",   "mode": "NULLABLE", "description": "Heart rate (bpm), ~every 2 min"},
-  {"name": "stress",       "type": "INTEGER",   "mode": "NULLABLE", "description": "Garmin stress score 0-100, ~every 3 min"},
-  {"name": "body_battery", "type": "INTEGER",   "mode": "NULLABLE", "description": "Body battery 0-100, ~every 3 min"},
-  {"name": "respiration",  "type": "FLOAT",     "mode": "NULLABLE", "description": "Breaths per minute"}
-]

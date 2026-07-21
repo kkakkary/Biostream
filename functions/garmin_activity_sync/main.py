@@ -4,7 +4,7 @@ Same shape as garmin_sync: scheduled poll, auto-discovers users from
 garmin-token-<user> secrets, idempotent by activity_id (delete-then-load).
 
 This exists to place exercise start/end markers on the post-prandial
-experiment timeline — garmin_daily/garmin_intraday have no activity data.
+experiment timeline — garmin_daily has no activity data.
 """
 
 from __future__ import annotations

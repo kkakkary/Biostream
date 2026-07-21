@@ -28,7 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       garmin_sync: ${{ steps.f.outputs.garmin_sync }}
-      garmin_intraday_sync: ${{ steps.f.outputs.garmin_intraday_sync }}
       garmin_activity_sync: ${{ steps.f.outputs.garmin_activity_sync }}
       meal_upload: ${{ steps.f.outputs.meal_upload }}
       meal_web: ${{ steps.f.outputs.meal_web }}
@@ -44,7 +43,6 @@ jobs:
           # On manual runs there is no diff base, so force everything true.
           filters: |
             garmin_sync: 'functions/garmin_sync/**'
-            garmin_intraday_sync: 'functions/garmin_intraday_sync/**'
             garmin_activity_sync: 'functions/garmin_activity_sync/**'
             meal_upload: 'functions/meal_upload/**'
             meal_web: 'functions/meal_web/**'
@@ -88,12 +86,6 @@ jobs:
         run: |
           gcloud functions deploy garmin-sync --gen2 --region="$REGION" --project="$PROJECT" \
             --source=functions/garmin_sync --runtime=python312 --entry-point=garmin_sync
-
-      - name: garmin-intraday-sync
-        if: ${{ needs.changes.outputs.garmin_intraday_sync == 'true' || github.event_name == 'workflow_dispatch' }}
-        run: |
-          gcloud functions deploy garmin-intraday-sync --gen2 --region="$REGION" --project="$PROJECT" \
-            --source=functions/garmin_intraday_sync --runtime=python312 --entry-point=garmin_intraday_sync
 
       - name: garmin-activity-sync
         if: ${{ needs.changes.outputs.garmin_activity_sync == 'true' || github.event_name == 'workflow_dispatch' }}
