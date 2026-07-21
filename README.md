@@ -51,9 +51,7 @@ Secret Manager (`upload-token-<user>`, `garmin-token-<user>`, …) — never in 
 infra/               Infra-as-code: setup.sh, setup_cicd.sh, BigQuery table schemas
 config/              users.example.yaml (3-subject config; real users.yaml is gitignored)
 ingestion/
-  garmin/            Garmin Connect puller + token bootstrap (CLI)
-  libre/             LibreLinkUp CGM test scripts
-  omron/             Omron Connect reader
+  garmin/            bootstrap_token.py — CLI fallback to onboard a Garmin token (operator use)
 functions/
   meal_upload/       photo/description -> Gemini -> BigQuery meals
   meal_web/          phone web app (meal logging, saved meals, time picker, Garmin connect)

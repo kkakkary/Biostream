@@ -1,3 +1,0 @@
-httpx
-python-dotenv
-pandas

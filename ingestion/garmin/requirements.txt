@@ -1,5 +1,1 @@
 garminconnect
-curl_cffi
-python-dotenv
-pandas
-matplotlib
