@@ -98,13 +98,16 @@ jobs:
       - name: garmin-activity-sync
         if: ${{ needs.changes.outputs.garmin_activity_sync == 'true' || github.event_name == 'workflow_dispatch' }}
         run: |
-          # --service-account is explicit here (unlike the other functions) because
-          # this is a first-ever deploy: with no prior manual deploy to inherit a
-          # runtime SA from, an omitted flag would default to the Compute SA, which
-          # can't read garmin-token-* secrets or write to BigQuery.
+          # --service-account and --set-env-vars are explicit here (unlike the
+          # other functions) because this is a first-ever deploy: with no prior
+          # manual deploy to inherit a runtime SA / PROJECT env var from, omitting
+          # them defaults to the Compute SA (can't read secrets or write BigQuery)
+          # and crashes on startup with KeyError: 'PROJECT'. Later redeploys go
+          # back to omitting these flags, same as every other function.
           gcloud functions deploy garmin-activity-sync --gen2 --region="$REGION" --project="$PROJECT" \
             --source=functions/garmin_activity_sync --runtime=python312 --entry-point=garmin_activity_sync \
             --service-account=twin-pipeline@digitaltwin-499202.iam.gserviceaccount.com \
+            --set-env-vars=PROJECT=digitaltwin-499202,BQ_DATASET=health_twin \
             --trigger-http
 
       - name: meal-upload
