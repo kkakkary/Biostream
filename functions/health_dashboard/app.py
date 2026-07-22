@@ -114,6 +114,19 @@ if view == "Single Meal":
     meal_ts = meal["capture_ts"]
 
     _meal_card(meal)
+
+    paired_activity = data.load_activities_window(
+        meal_ts + pd.Timedelta(minutes=30), meal_ts + pd.Timedelta(hours=1))
+    if not paired_activity.empty:
+        a = paired_activity.iloc[0]
+        mins_after = round((a["start_ts"] - meal_ts).total_seconds() / 60)
+        duration = f"{a['duration_seconds'] / 60:.0f} min" if pd.notna(a["duration_seconds"]) else "—"
+        calories = f"{a['calories']:.0f} kcal" if pd.notna(a["calories"]) else "—"
+        st.caption(f"🏃 **{a['activity_name']}** ({a['activity_type']}) — "
+                   f"started {mins_after} min after this meal · {duration} · {calories}")
+    else:
+        st.caption("No activity logged 30–60 min after this meal.")
+
     st.divider()
 
     hours_after = st.slider("Hours to track after the meal", 4, 20, DEFAULT_POST_MEAL_HOURS)
