@@ -133,12 +133,11 @@ jobs:
           gcloud run deploy meal-web --source=functions/meal_web \
             --region="$REGION" --project="$PROJECT" --quiet
 
-      # Private post-prandial experiment dashboard (meal photos + clinical
-      # stats). --no-allow-unauthenticated actively revokes the allUsers
-      # binding left over from its earlier life as a public showcase page.
+      # Public post-prandial experiment dashboard (meal photos + clinical
+      # stats, kevin only — USER_ID is hardcoded in data.py).
       - name: health-dashboard
         if: ${{ needs.changes.outputs.health_dashboard == 'true' || github.event_name == 'workflow_dispatch' }}
         run: |
           gcloud run deploy health-dashboard --source=functions/health_dashboard \
             --region="$REGION" --project="$PROJECT" --quiet \
-            --no-allow-unauthenticated --memory=1Gi --max-instances=2 --session-affinity
+            --allow-unauthenticated --memory=1Gi --max-instances=2 --session-affinity
