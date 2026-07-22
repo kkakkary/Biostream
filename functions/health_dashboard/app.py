@@ -77,6 +77,31 @@ def _load_meal_window(meal_ts, hours_after: int):
     }
 
 
+def _activity_section(meal_ts):
+    """Show the Garmin activity (if any) that started 30-60 min after the
+    meal — e.g. a post-meal walk — with its own metrics row."""
+    st.subheader("🏃 Post-Meal Activity")
+    paired = data.load_activities_window(meal_ts + pd.Timedelta(minutes=30),
+                                         meal_ts + pd.Timedelta(hours=1))
+    if paired.empty:
+        st.caption("No activity logged 30–60 min after this meal.")
+        return
+
+    a = paired.iloc[0]
+    mins_after = round((a["start_ts"] - meal_ts).total_seconds() / 60)
+    st.caption(f"**{a['activity_name']}** — started {mins_after} min after this meal")
+
+    cols = st.columns(4)
+    cols[0].metric("Type", a["activity_type"].title() if pd.notna(a["activity_type"]) else "—")
+    cols[1].metric("Duration", f"{a['duration_seconds'] / 60:.0f} min"
+                   if pd.notna(a["duration_seconds"]) else "—")
+    cols[2].metric("Calories", f"{a['calories']:.0f}" if pd.notna(a["calories"]) else "—")
+    cols[3].metric("Avg HR", f"{a['avg_hr']:.0f} bpm" if pd.notna(a["avg_hr"]) else "—",
+                   help=f"Max: {a['max_hr']:.0f} bpm" if pd.notna(a["max_hr"]) else None)
+    if pd.notna(a["distance_m"]):
+        st.caption(f"Distance: {a['distance_m'] / 1609.34:.2f} mi")
+
+
 def _stat_metrics(stats: dict):
     cols = st.columns(4)
     cols[0].metric("Baseline", f"{stats['baseline_mg_dl']:.0f} mg/dL"
@@ -96,7 +121,7 @@ st.title("Kevin — Post-Prandial Experiment")
 st.caption(
     "N-of-1 CGM analysis: how meals move glucose, and whether post-meal "
     "exercise changes the response. Fed live from the Biostream pipeline "
-    "(Garmin, FreeStyle Libre CGM, Omron BP) — private, not for public sharing."
+    "(Garmin, FreeStyle Libre CGM, Omron BP)."
 )
 
 view = st.segmented_control("View", options=["Single Meal", "Paired Meal Experiment"],
@@ -114,19 +139,7 @@ if view == "Single Meal":
     meal_ts = meal["capture_ts"]
 
     _meal_card(meal)
-
-    paired_activity = data.load_activities_window(
-        meal_ts + pd.Timedelta(minutes=30), meal_ts + pd.Timedelta(hours=1))
-    if not paired_activity.empty:
-        a = paired_activity.iloc[0]
-        mins_after = round((a["start_ts"] - meal_ts).total_seconds() / 60)
-        duration = f"{a['duration_seconds'] / 60:.0f} min" if pd.notna(a["duration_seconds"]) else "—"
-        calories = f"{a['calories']:.0f} kcal" if pd.notna(a["calories"]) else "—"
-        st.caption(f"🏃 **{a['activity_name']}** ({a['activity_type']}) — "
-                   f"started {mins_after} min after this meal · {duration} · {calories}")
-    else:
-        st.caption("No activity logged 30–60 min after this meal.")
-
+    _activity_section(meal_ts)
     st.divider()
 
     hours_after = st.slider("Hours to track after the meal", 4, 20, DEFAULT_POST_MEAL_HOURS)

@@ -134,7 +134,7 @@ def load_glucose_window(start_ts, end_ts) -> pd.DataFrame:
 def load_activities_window(start_ts, end_ts) -> pd.DataFrame:
     return _query_params(f"""
         SELECT activity_id, activity_type, activity_name, start_ts, end_ts,
-               duration_seconds, calories, avg_hr, max_hr
+               duration_seconds, distance_m, calories, avg_hr, max_hr
         FROM `{DATASET}.garmin_activities`
         WHERE user_id = @user_id AND start_ts BETWEEN @start_ts AND @end_ts
         ORDER BY start_ts
