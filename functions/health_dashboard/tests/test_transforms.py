@@ -1,3 +1,7 @@
+"""Tests for transforms.py — tiny hand-built dataframes in, checked numbers out.
+(_daily and _glucose below are helpers that fabricate realistic-shaped test
+data so each test stays one readable block.)"""
+
 import sys
 from datetime import date
 from pathlib import Path
@@ -5,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+# Make the parent folder importable so `import transforms` works under pytest.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import transforms  # noqa: E402

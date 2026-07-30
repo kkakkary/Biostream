@@ -1,10 +1,10 @@
-# Fixed light theme matching the chart palette (surface #fcfcfb on plane #f9f9f7).
+# MOAI brand theme: deep purple accent on the logo's own off-white background.
 [theme]
 base = "light"
-primaryColor = "#2a78d6"
-backgroundColor = "#f9f9f7"
-secondaryBackgroundColor = "#fcfcfb"
-textColor = "#0b0b0b"
+primaryColor = "#35126A"
+backgroundColor = "#f2f1ef"
+secondaryBackgroundColor = "#e7e4de"
+textColor = "#151022"
 font = "sans serif"
 
 [server]

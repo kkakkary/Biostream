@@ -1,4 +1,9 @@
-"""Pure dataframe transforms — no Streamlit, no BigQuery, unit-testable."""
+"""Pure dataframe transforms — no Streamlit, no BigQuery, unit-testable.
+
+"Pure" means: same input -> same output, no side effects, nothing external
+touched. That's what makes tests/test_transforms.py able to test these with
+tiny hand-built dataframes and no cloud access.
+"""
 
 import pandas as pd
 
@@ -11,12 +16,15 @@ def sleep_stages(daily: pd.DataFrame) -> pd.DataFrame:
     Light sleep is not stored; it's the remainder of total minus deep and REM.
     Nights with no sleep data are dropped.
     """
+    # .copy() so we mutate our own frame, not the caller's (pandas warns otherwise).
     df = daily.dropna(subset=["sleep_seconds"]).copy()
     df = df[df["sleep_seconds"] > 0]
     deep = df["deep_sleep_seconds"].fillna(0)
     rem = df["rem_sleep_seconds"].fillna(0)
     df["deep_h"] = deep / 3600
     df["rem_h"] = rem / 3600
+    # clip(lower=0): if deep+REM ever exceeds the total (bad vendor data),
+    # report 0 light sleep rather than a negative number.
     df["light_h"] = ((df["sleep_seconds"] - deep - rem).clip(lower=0)) / 3600
     return df[["date", "deep_h", "rem_h", "light_h"]]
 
@@ -24,7 +32,11 @@ def sleep_stages(daily: pd.DataFrame) -> pd.DataFrame:
 def time_in_range(glucose: pd.DataFrame,
                   lo: float = GLUCOSE_RANGE_MG_DL[0],
                   hi: float = GLUCOSE_RANGE_MG_DL[1]) -> float | None:
-    """Percent of CGM readings inside [lo, hi]. None when there are no readings."""
+    """Percent of CGM readings inside [lo, hi]. None when there are no readings.
+
+    The trick: `(values >= lo) & (values <= hi)` is a series of True/False,
+    and .mean() of booleans = fraction of Trues; *100 makes it a percent.
+    """
     values = glucose["glucose_mg_dl"].dropna()
     if values.empty:
         return None
@@ -34,13 +46,20 @@ def time_in_range(glucose: pd.DataFrame,
 def break_time_gaps(df: pd.DataFrame, ts_col: str,
                     max_gap: pd.Timedelta) -> pd.DataFrame:
     """Insert an all-NaN row inside every sampling gap wider than max_gap,
-    so line charts show a break instead of a false bridge across missing data."""
+    so line charts show a break instead of a false bridge across missing data.
+
+    (Plotly draws a straight line between consecutive points; a NaN point in
+    the middle of a gap forces the pen to lift.)
+    """
     if len(df) < 2:
         return df
     df = df.sort_values(ts_col).reset_index(drop=True)
+    # .diff() = time since the previous reading; True where that exceeds max_gap.
     gap_starts = df[ts_col].diff() > max_gap
     if not gap_starts.any():
         return df
+    # Build one row per gap, timestamped just inside it. Only ts_col is set,
+    # so every value column is NaN — exactly what breaks the line.
     breaks = pd.DataFrame({
         ts_col: df.loc[gap_starts, ts_col] - max_gap / 2,
     })
@@ -50,7 +69,9 @@ def break_time_gaps(df: pd.DataFrame, ts_col: str,
 
 def fill_date_gaps(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
     """Reindex a daily frame onto its full calendar range so missing days
-    become NaN rows (line charts then break instead of bridging them)."""
+    become NaN rows (line charts then break instead of bridging them).
+    Same goal as break_time_gaps, but for daily data: build the complete
+    day-by-day calendar with date_range, then reindex onto it."""
     if df.empty:
         return df
     df = df.sort_values(date_col)
@@ -73,8 +94,9 @@ def kpi_row(daily: pd.DataFrame, glucose: pd.DataFrame) -> dict:
         series = df[["date", col]].dropna()
         if series.empty:
             return None, None
-        latest = float(series[col].iloc[-1])
-        prior = series[col].iloc[-8:-1]
+        latest = float(series[col].iloc[-1])       # iloc[-1] = last (newest) row
+        prior = series[col].iloc[-8:-1]            # the 7 rows before that
+        # Require at least 3 prior days, else a delta would be mostly noise.
         delta = float(latest - prior.mean()) if len(prior) >= 3 else None
         return latest, delta
 
@@ -85,7 +107,7 @@ def kpi_row(daily: pd.DataFrame, glucose: pd.DataFrame) -> dict:
     sleep_h = float(sleep["sleep_seconds"].iloc[-1]) / 3600 if not sleep.empty else None
 
     steps = df.dropna(subset=["total_steps"])
-    steps_yday = float(steps["total_steps"].iloc[-2]) if len(steps) >= 2 else None
+    steps_yday = float(steps["total_steps"].iloc[-2]) if len(steps) >= 2 else None   # [-2] = second-newest
 
     glucose_avg = None
     if not glucose.empty:

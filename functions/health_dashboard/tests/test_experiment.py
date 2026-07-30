@@ -1,9 +1,19 @@
+"""Tests for experiment.py (the CGM statistics math).
+
+How to read these: each test builds a tiny hand-made glucose series where the
+right answer can be computed on paper (the comments show the arithmetic),
+calls one function, and asserts the result. pytest runs every function whose
+name starts with `test_`; pytest.approx() allows tiny floating-point error.
+"""
+
 import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+# Make the parent folder (health_dashboard/) importable so `import experiment`
+# works when pytest runs from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import experiment  # noqa: E402
@@ -12,6 +22,9 @@ MEAL_TS = pd.Timestamp("2026-07-18 19:00", tz="UTC")
 
 
 def _glucose(offsets_min, values):
+    """Build a glucose frame from minutes-relative-to-meal + values,
+    e.g. _glucose([-10, 30], [80, 150]) = a reading 10 min before the meal
+    and one 30 min after."""
     return pd.DataFrame({
         "ts": [MEAL_TS + pd.Timedelta(minutes=m) for m in offsets_min],
         "glucose_mg_dl": values,
