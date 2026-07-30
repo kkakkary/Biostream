@@ -9,29 +9,45 @@ secret reaches the browser. Features:
   * re-log a saved meal in one tap (no photo / no Gemini, fresh timestamp)
 
 Deployed as a Cloud Run service (buildpacks: see Procfile).
+
+HOW TO READ THIS FILE — it's three things stitched together:
+  1. A Flask web server. Each `@app.get(...)`/`@app.post(...)` decorator maps
+     a URL to the function right below it (a "route"). Flask calls that
+     function when a matching request arrives.
+  2. One big HTML+JavaScript page stored in the PAGE string. The browser side
+     lives there; the Python routes are the API it talks to.
+  3. Account-linking flows (/connect/... for Garmin, /connect-omron/... for
+     Omron) that turn a one-time login into a stored token the sync
+     functions can use forever after.
+
+The security model in one sentence: the only "login" is knowing your personal
+random link token; the server translates token -> user_id on every request,
+and every BigQuery query filters on that user_id.
 """
 
 from __future__ import annotations
 
-import base64
+import base64      # binary <-> text encoding; used to smuggle Garmin MFA state through a form field
 import datetime as dt
-import hashlib
+import hashlib     # SHA-256 for Omron's checksum header
 import json
 import os
-import uuid
+import uuid        # random ids for saved-meal templates
 
-import httpx
-import requests
+import httpx       # HTTP client used for Omron
+import requests    # HTTP client used to forward meals to the meal-upload function
 from flask import Flask, Response, abort, request
 from garminconnect import Garmin
 from google.cloud import bigquery, secretmanager
 
-app = Flask(__name__)
+app = Flask(__name__)   # the web application object; routes attach to it below
 
 PROJECT = os.environ["PROJECT"]
 BQ_DATASET = os.environ.get("BQ_DATASET", "health_twin")
-MEAL_UPLOAD_URL = os.environ["MEAL_UPLOAD_URL"]
-UPLOAD_TOKEN = os.environ["UPLOAD_TOKEN"]
+MEAL_UPLOAD_URL = os.environ["MEAL_UPLOAD_URL"]   # where to forward meal submissions
+UPLOAD_TOKEN = os.environ["UPLOAD_TOKEN"]          # shared secret meal-upload expects
+# MEAL_WEB_LINKS is a JSON env var like {"a1b2c3...": "kevin", ...} —
+# the whole "who is this?" mapping, kept server-side only.
 LINKS: dict[str, str] = json.loads(os.environ.get("MEAL_WEB_LINKS", "{}"))
 
 _bq = bigquery.Client(project=PROJECT)
@@ -46,7 +62,12 @@ _OMRON_USER_AGENT = "OmronConnect/3 CFNetwork/1410.0.3 Darwin/22.6.0"
 
 
 def _store_garmin_token(user: str, token: str) -> None:
-    """Save (or update) the user's Garmin token as garmin-token-<user>."""
+    """Save (or update) the user's Garmin token as garmin-token-<user>.
+
+    get_secret raises if the secret doesn't exist yet — the except branch
+    creates it, then either way we add the token as a new version. This is
+    also what makes users auto-appear in garmin_sync._users().
+    """
     secret_id = f"garmin-token-{user}"
     parent = f"projects/{PROJECT}/secrets/{secret_id}"
     try:
@@ -58,7 +79,8 @@ def _store_garmin_token(user: str, token: str) -> None:
 
 
 def _store_omron_token(user: str, tokens: dict) -> None:
-    """Save (or update) the user's Omron tokens as omron-token-<user>."""
+    """Save (or update) the user's Omron tokens as omron-token-<user>.
+    Same create-if-missing pattern as _store_garmin_token."""
     secret_id = f"omron-token-{user}"
     parent = f"projects/{PROJECT}/secrets/{secret_id}"
     try:
@@ -70,12 +92,16 @@ def _store_omron_token(user: str, tokens: dict) -> None:
 
 
 def _omron_checksum_hook(req: httpx.Request) -> None:
+    """Omron requires a SHA-256 checksum of the body on POST/DELETE (same
+    hook as omron_sync — see comments there)."""
     if req.method in ("POST", "DELETE") and req.content:
         req.headers["Checksum"] = hashlib.sha256(req.content).hexdigest()
 
 
 def _omron_login(email: str, password: str, country: str = "US") -> dict:
-    """Authenticate to Omron Connect, return {email, accessToken, refreshToken}."""
+    """Authenticate to Omron Connect, return {email, accessToken, refreshToken}.
+    Called once at connect time; afterwards omron_sync refreshes these tokens
+    on every run and the password is never needed (or stored) again."""
     with httpx.Client(
         event_hooks={"request": [_omron_checksum_hook]},
         headers={"user-agent": _OMRON_USER_AGENT},
@@ -92,6 +118,9 @@ def _omron_login(email: str, password: str, country: str = "US") -> dict:
 
 
 def _user_for(link_token: str) -> str:
+    """The auth gate every route goes through: personal link token -> user_id.
+    abort(404) stops the request immediately — unknown tokens get the same
+    response as a nonexistent page, revealing nothing."""
     user = LINKS.get(link_token)
     if not user:
         abort(404)
@@ -104,6 +133,7 @@ def fetch_saved(user: str) -> list[dict]:
             FROM `{SAVED}` WHERE user_id=@u ORDER BY created_ts DESC LIMIT 50"""
     job = _bq.query(q, job_config=bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("u", "STRING", user)]))
+    # BigQuery returns Row objects; dict(r) makes them JSON-serializable.
     return [dict(r) for r in job.result()]
 
 
@@ -113,12 +143,16 @@ def fetch_saved(user: str) -> list[dict]:
 # re-syncs (see garmin_sync._existing_meds), so logging here is durable.
 # --------------------------------------------------------------------------- #
 def _valid_date(s: str) -> str:
-    """Accept only a YYYY-MM-DD calendar date (guards the DML below)."""
+    """Accept only a YYYY-MM-DD calendar date (guards the DML below).
+    fromisoformat raises ValueError on anything else, which callers catch
+    and turn into a 400 response — malformed input never reaches SQL."""
     return dt.date.fromisoformat((s or "").strip()).isoformat()
 
 
 def fetch_meds(user: str, date: str) -> list[dict]:
-    """Return the medications logged for this (user, date), in log order."""
+    """Return the medications logged for this (user, date), in log order.
+    `UNNEST(medications)` expands the row's medications ARRAY into one result
+    row per med, so we can select name/dose as plain columns."""
     q = f"""SELECT m.name AS name, m.dose AS dose
             FROM `{GARMIN_DAILY}`, UNNEST(medications) AS m
             WHERE user_id=@u AND date=@d"""
@@ -128,11 +162,18 @@ def fetch_meds(user: str, date: str) -> list[dict]:
     return [dict(r) for r in job.result()]
 
 
+# --------------------------------------------------------------------------- #
+# The web page itself. One HTML document (with CSS + JavaScript inline) held
+# in a Python string. Two placeholders — __USER__ and __SAVED_JSON__ — are
+# substituted by the page() route before serving. The JavaScript below talks
+# back to the /m/<token>/... routes defined later in this file.
+# --------------------------------------------------------------------------- #
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The apple-* tags + manifest make "Add to Home Screen" behave like an app. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Log Meal">
 <meta name="theme-color" content="#0b7">
@@ -180,6 +221,7 @@ PAGE = """<!doctype html>
   <h1>📸 Log a meal</h1>
   <p class="who">Logging as <strong>__USER__</strong></p>
 
+  <!-- capture="environment" tells phones to open the rear camera directly. -->
   <label class="cam" for="photo">📷 Take a photo <span style="font-weight:400;font-size:.9rem">(optional)</span></label>
   <input id="photo" type="file" accept="image/*" capture="environment">
   <img id="preview" alt="preview">
@@ -202,6 +244,8 @@ PAGE = """<!doctype html>
 </div>
 
 <script>
+  // __SAVED_JSON__ is replaced server-side with this user's saved meals, so
+  // the list renders instantly with no extra network call.
   const SAVED = __SAVED_JSON__;
   const base = window.location.pathname;             // /m/<token>
   const photo = document.getElementById('photo');
@@ -213,12 +257,13 @@ PAGE = """<!doctype html>
   function captureTs() { return when.value ? new Date(when.value).toISOString() : new Date().toISOString(); }
   const status = document.getElementById('status');
   const savedBox = document.getElementById('saved');
-  let lastMeal = null;
+  let lastMeal = null;   // remembered so "Save this meal" knows what to save
 
+  // Send is only enabled once there's a photo or a description.
   function refreshSend() { send.disabled = !(photo.files.length || notes.value.trim()); }
   photo.addEventListener('change', () => {
     if (photo.files.length) {
-      preview.src = URL.createObjectURL(photo.files[0]);
+      preview.src = URL.createObjectURL(photo.files[0]);   // local preview, no upload yet
       preview.style.display = 'block';
     }
     status.innerHTML = '';
@@ -226,6 +271,8 @@ PAGE = """<!doctype html>
   });
   notes.addEventListener('input', refreshSend);
 
+  // Main submit: package photo+notes+time as a form POST to /m/<token>/submit
+  // (the server forwards it to the meal-upload function, which runs Gemini).
   send.addEventListener('click', async () => {
     if (!photo.files.length && !notes.value.trim()) return;
     send.disabled = true;
@@ -250,10 +297,12 @@ PAGE = """<!doctype html>
     } catch (e) {
       status.innerHTML = `<div class="card err">Network error. Please try again.</div>`;
     }
+    // Reset the form for the next meal either way.
     photo.value = ''; preview.style.display='none'; notes.value=''; when.value='';
     refreshSend();
   });
 
+  // The green "Logged" result card showing estimated macros.
   function macroCard(m, withSave) {
     return `<div class="card"><div class="big">✅ Logged</div>
       <div style="margin-top:8px">≈ <strong>${Math.round(m.calories)}</strong> kcal</div>
@@ -262,6 +311,7 @@ PAGE = """<!doctype html>
       </div>`;
   }
 
+  // "⭐ Save this meal" -> POST the last logged meal as a reusable template.
   async function saveMeal() {
     if (!lastMeal) return;
     const name = prompt("Name this meal (e.g. 'morning protein shake'):");
@@ -272,6 +322,7 @@ PAGE = """<!doctype html>
     });
     const d = await r.json();
     if (d.status === 'ok') {
+      // unshift = add to the front, so the newest template shows first.
       SAVED.unshift({ saved_meal_id:d.saved_meal_id, name, calories:lastMeal.calories,
         carbs_g:lastMeal.carbs_g, protein_g:lastMeal.protein_g, fat_g:lastMeal.fat_g, fiber_g:lastMeal.fiber_g });
       renderSaved();
@@ -280,6 +331,7 @@ PAGE = """<!doctype html>
     }
   }
 
+  // "Log again" on a saved meal -> re-log it with a fresh timestamp (no Gemini).
   async function logSaved(id, btn) {
     btn.disabled = true; btn.textContent = 'Logging…';
     const r = await fetch(base + '/log-saved', {
@@ -310,6 +362,8 @@ PAGE = """<!doctype html>
   const medDose = document.getElementById('medDose');
   const medBtn = document.getElementById('medBtn');
   const medList = document.getElementById('medList');
+  // esc() HTML-escapes user text before inserting it into the page — without
+  // this, a med named "<script>..." would execute as code (XSS).
   const esc = s => (s || '').replace(/[&<>"']/g,
       c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   medDate.value = new Date().toLocaleDateString('en-CA');  // YYYY-MM-DD, local
@@ -354,6 +408,7 @@ PAGE = """<!doctype html>
 </body>
 </html>"""
 
+# Web-app manifest: lets iPhones "install" the page to the home screen.
 MANIFEST = {
     "name": "Log a meal", "short_name": "Log Meal", "display": "standalone",
     "background_color": "#f4f6f5", "theme_color": "#0b7", "start_url": ".", "icons": [],
@@ -362,6 +417,7 @@ MANIFEST = {
 
 @app.get("/healthz")
 def healthz():
+    """Liveness probe — Cloud Run pings this to know the service is up."""
     return "ok"
 
 
@@ -372,14 +428,22 @@ def manifest():
 
 @app.get("/m/<link_token>")
 def page(link_token: str):
+    """Serve the main page. <link_token> in the route is a URL variable —
+    Flask passes it in as the function argument."""
     user = _user_for(link_token)
     saved_json = json.dumps(fetch_saved(user), default=str)
+    # Poor-man's templating: swap the two placeholders in the PAGE string.
     html = PAGE.replace("__USER__", user).replace("__SAVED_JSON__", saved_json)
     return Response(html, mimetype="text/html")
 
 
 @app.post("/m/<link_token>/submit")
 def submit(link_token: str):
+    """Relay a meal submission to the meal-upload function.
+
+    The browser never sees UPLOAD_TOKEN — this server adds it when
+    forwarding, which is the whole reason the relay exists.
+    """
     user = _user_for(link_token)
     file = request.files.get("image")
     notes = request.form.get("notes", "")
@@ -391,12 +455,16 @@ def submit(link_token: str):
     files = ({"image": (file.filename or "meal.jpg", file.read(), file.mimetype or "image/jpeg")}
              if file is not None else None)
     resp = requests.post(MEAL_UPLOAD_URL, files=files, data=data, timeout=120)
+    # Pass meal-upload's JSON response straight back to the browser.
     return Response(resp.text, status=resp.status_code, mimetype="application/json")
 
 
 @app.post("/m/<link_token>/save")
 def save(link_token: str):
+    """Store the last-logged meal as a reusable template in saved_meals."""
     user = _user_for(link_token)
+    # force=True: parse the body as JSON regardless of Content-Type;
+    # silent=True: return None instead of raising on bad JSON.
     b = request.get_json(force=True, silent=True) or {}
     name = (b.get("name") or "").strip()
     if not name:
@@ -409,6 +477,7 @@ def save(link_token: str):
         "fat_g": b.get("fat_g"), "fiber_g": b.get("fiber_g"), "calories": b.get("calories"),
         "items": json.dumps(b.get("items")) if b.get("items") is not None else None,
         "gcs_uri": b.get("gcs_uri"), "user_notes": b.get("user_notes"),
+        # App-generated timestamp -> fixed PDT (UTC-7), same convention as everywhere.
         "created_ts": (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=7)).replace(tzinfo=None).isoformat(),
     }
     errors = _bq.insert_rows_json(SAVED, [row])
@@ -421,6 +490,7 @@ def save(link_token: str):
 
 @app.post("/m/<link_token>/log-saved")
 def log_saved(link_token: str):
+    """Re-log a saved template as a fresh meal row (no photo, no Gemini)."""
     user = _user_for(link_token)
     b = request.get_json(force=True, silent=True) or {}
     sid = b.get("saved_meal_id")
@@ -428,7 +498,8 @@ def log_saved(link_token: str):
         return Response(json.dumps({"status": "error"}), 400, mimetype="application/json")
     capture_ts = b.get("capture_ts") or dt.datetime.now(dt.timezone.utc).isoformat()
 
-    # Look up the saved template (must belong to this user).
+    # Look up the saved template (must belong to this user — the user_id
+    # filter means you can't log someone else's template by guessing ids).
     q = f"SELECT * FROM `{SAVED}` WHERE user_id=@u AND saved_meal_id=@s LIMIT 1"
     job = _bq.query(q, job_config=bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("u", "STRING", user),
@@ -444,6 +515,8 @@ def log_saved(link_token: str):
     if cap_dt.tzinfo is None:
         cap_dt = cap_dt.replace(tzinfo=dt.timezone.utc)
     cap_dt = (cap_dt - dt.timedelta(hours=7)).replace(tzinfo=None)
+    # Build a meals row from the template, with fresh timestamps and
+    # source="saved" (so analysis can tell re-logs from Gemini estimates).
     meal = {
         "user_id": user,
         "meal_id": f"{user}-{cap_dt.strftime('%Y%m%dT%H%M%S')}",
@@ -466,6 +539,7 @@ def log_saved(link_token: str):
 
 @app.get("/m/<link_token>/meds")
 def list_meds(link_token: str):
+    """Medications for one day, for the page's 💊 section."""
     user = _user_for(link_token)
     try:
         date = _valid_date(request.args.get("date", ""))
@@ -478,6 +552,7 @@ def list_meds(link_token: str):
 
 @app.post("/m/<link_token>/log-med")
 def log_med(link_token: str):
+    """Append one medication to the day's garmin_daily row."""
     user = _user_for(link_token)
     b = request.get_json(force=True, silent=True) or {}
     name = (b.get("name") or "").strip()
@@ -492,6 +567,8 @@ def log_med(link_token: str):
                         mimetype="application/json")
     # Append to the day's medications, creating the row if the day has none yet.
     # Garmin-derived columns on an existing row are left untouched.
+    # MERGE = SQL's "update if the row exists, insert if it doesn't", exactly
+    # the two cases here: the day may or may not have synced from Garmin yet.
     _bq.query(
         f"""MERGE `{GARMIN_DAILY}` T
             USING (SELECT @u AS user_id, @d AS date) S
@@ -506,12 +583,14 @@ def log_med(link_token: str):
             bigquery.ScalarQueryParameter("name", "STRING", name),
             bigquery.ScalarQueryParameter("dose", "STRING", dose or None)]),
     ).result()
+    # Return the refreshed list so the page can re-render immediately.
     return Response(json.dumps({"status": "ok", "medications": fetch_meds(user, date)}),
                     mimetype="application/json")
 
 
 @app.post("/m/<link_token>/remove-med")
 def remove_med(link_token: str):
+    """Remove the medication at a given position in the day's list."""
     user = _user_for(link_token)
     b = request.get_json(force=True, silent=True) or {}
     try:
@@ -521,6 +600,9 @@ def remove_med(link_token: str):
         return Response(json.dumps({"status": "error", "reason": "bad input"}), 400,
                         mimetype="application/json")
     # Drop the medication at position `idx`, preserving the rest and the row.
+    # (SQL arrays can't delete-by-index directly, so: unnest with each item's
+    # position ("OFFSET"), keep every item whose position isn't idx, and
+    # rebuild the array.)
     _bq.query(
         f"""UPDATE `{GARMIN_DAILY}`
             SET medications = ARRAY(
@@ -541,6 +623,9 @@ def remove_med(link_token: str):
 # resulting (auto-refreshing) token is saved to garmin-token-<user>.
 # --------------------------------------------------------------------------- #
 def _connect_shell(body: str, title: str = "Connect Garmin") -> str:
+    """Minimal page wrapper for the connect flows. This is an f-string, so
+    literal CSS braces must be doubled ({{ }}) — that's why the style block
+    looks different from PAGE above."""
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -561,6 +646,7 @@ def _connect_shell(body: str, title: str = "Connect Garmin") -> str:
 
 @app.get("/connect/<link_token>")
 def connect_page(link_token: str):
+    """The Garmin sign-in form."""
     user = _user_for(link_token)
     body = f"""<h1>⌚ Connect Garmin</h1>
     <p class="muted">Hi <strong>{user}</strong> — sign in once to link your Garmin
@@ -575,6 +661,10 @@ def connect_page(link_token: str):
 
 @app.post("/connect/<link_token>/start")
 def connect_start(link_token: str):
+    """Handle the Garmin login. Two possible outcomes:
+    - login succeeds outright -> store the token, show success
+    - Garmin wants MFA -> show a code-entry form that posts to /mfa below
+    """
     user = _user_for(link_token)
     email = (request.form.get("email") or "").strip()
     password = request.form.get("password") or ""
@@ -586,6 +676,9 @@ def connect_start(link_token: str):
         r1, r2 = g.login()
         if r1 == "needs_mfa":
             # Carry the (serializable) login state to the MFA step via a hidden field.
+            # (HTTP is stateless — the server forgets everything between requests,
+            # so the half-finished login has to ride along inside the form,
+            # base64-encoded to survive as an HTML attribute value.)
             state = base64.b64encode(json.dumps(r2).encode()).decode()
             body = f"""<h1>⌚ Enter your code</h1>
             <p class="muted">Garmin sent a verification code to <strong>{user}</strong>'s
@@ -596,6 +689,8 @@ def connect_start(link_token: str):
               <button type="submit">Verify &amp; connect</button>
             </form>"""
             return Response(_connect_shell(body), mimetype="text/html")
+        # g.client.dumps() serializes the whole authenticated session — this
+        # is the token blob garmin_sync loads on every scheduled run.
         _store_garmin_token(user, g.client.dumps())
         return Response(_connect_shell(_connect_success(user)), mimetype="text/html")
     except Exception:
@@ -606,6 +701,7 @@ def connect_start(link_token: str):
 
 @app.post("/connect/<link_token>/mfa")
 def connect_mfa(link_token: str):
+    """Finish a Garmin login that required a verification code."""
     user = _user_for(link_token)
     code = (request.form.get("code") or "").strip()
     try:
@@ -661,6 +757,9 @@ def connect_omron_start(link_token: str):
         return Response(
             _connect_shell(_omron_connect_success(user), title="Connect Omron"),
             mimetype="text/html")
+    # Two levels of error handling: a clean HTTP error from Omron (wrong
+    # password vs. server trouble) gets a specific message; anything else
+    # falls through to the generic "couldn't reach" catch-all.
     except httpx.HTTPStatusError as exc:
         print(f"[connect-omron] HTTP error for user={user}: {exc.response.status_code} {exc.response.text[:200]}")
         msg = ("Couldn't sign in — check the email/password and try again."
