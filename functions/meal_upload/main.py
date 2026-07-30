@@ -9,22 +9,30 @@ Shortcut. Expects a multipart/form-data POST:
     token       shared upload secret (required; checked against UPLOAD_TOKEN)
 
 Returns the estimated macros as JSON so the caller can display them.
+
+HOW TO READ THIS FILE: unlike the sync functions (which poll on a schedule),
+this one is *pushed to* — a phone sends a photo, and in one request we:
+  1. check the shared-secret token (auth)
+  2. validate the form fields and normalize the timestamp
+  3. shrink the photo (_resize_jpeg)
+  4. ask Gemini "is this food, and what are the macros?" (structured output)
+  5. if it's food: save the photo to Cloud Storage + insert a row in BigQuery
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import io
+import io        # in-memory byte buffers — lets PIL read/write images without temp files
 import json
 import os
-import uuid
+import uuid      # random ids, used to make photo filenames collision-proof
 
 import functions_framework
-from google import genai
+from google import genai            # Gemini API client
 from google.genai import types
 from google.cloud import bigquery, storage
-from PIL import Image
-from pydantic import BaseModel
+from PIL import Image               # Pillow — the standard Python image library
+from pydantic import BaseModel      # data classes with validation; also used as Gemini's output schema
 
 PROJECT = os.environ["PROJECT"]
 BUCKET = os.environ["BUCKET"]
@@ -42,6 +50,8 @@ _genai = genai.Client(vertexai=True, project=PROJECT, location=GEMINI_LOCATION)
 
 
 # --- Structured output schema Gemini must return ------------------------------
+# Passing these pydantic classes as response_schema forces Gemini to reply
+# with JSON in exactly this shape — no free-text answers to parse by hand.
 class FoodItem(BaseModel):
     food: str
     grams: float
@@ -77,9 +87,13 @@ PROMPT = (
 
 
 def _resize_jpeg(raw: bytes) -> bytes:
-    """Downscale to MAX_EDGE long edge and re-encode as JPEG."""
+    """Downscale to MAX_EDGE long edge and re-encode as JPEG.
+
+    Phones produce multi-MB photos; 1024px is plenty for Gemini and keeps
+    storage cheap. thumbnail() preserves aspect ratio and never upscales.
+    """
     img = Image.open(io.BytesIO(raw))
-    img = img.convert("RGB")
+    img = img.convert("RGB")   # strips alpha/HEIC quirks so JPEG encoding always works
     img.thumbnail((MAX_EDGE, MAX_EDGE))
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=85)
@@ -89,6 +103,9 @@ def _resize_jpeg(raw: bytes) -> bytes:
 @functions_framework.http
 def meal_upload(request):
     # --- auth ---
+    # Shared-secret check: the phone must present the same UPLOAD_TOKEN the
+    # function was deployed with. `not UPLOAD_TOKEN` also rejects everything
+    # if the env var was accidentally left unset (fail closed, not open).
     token = request.form.get("token") or request.headers.get("X-Upload-Token", "")
     if not UPLOAD_TOKEN or token != UPLOAD_TOKEN:
         return ("unauthorized", 401)
@@ -112,9 +129,11 @@ def meal_upload(request):
     except ValueError:
         return (f"capture_ts not valid ISO-8601: {capture_ts!r}", 400)
 
+    # Conditional expression: resize if a photo came in, else no image bytes.
     img_bytes = _resize_jpeg(file.read()) if file is not None else None
 
     # --- Gemini: is this even a meal? (works from photo, text, or both) ---
+    # `contents` is the multimodal message we send: [photo?, prompt, user notes?].
     contents = []
     if img_bytes is not None:
         contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
@@ -127,10 +146,11 @@ def meal_upload(request):
         contents=contents,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema=MealEstimate,
-            temperature=0.2,
+            response_schema=MealEstimate,   # forces the MealEstimate JSON shape
+            temperature=0.2,                # low temperature = consistent estimates
         ),
     )
+    # resp.parsed is the JSON already validated into a MealEstimate object.
     est: MealEstimate = resp.parsed
 
     # Non-food / too-vague: skip storage AND BigQuery so junk can't pollute data.
@@ -145,6 +165,8 @@ def meal_upload(request):
     # --- it's a meal: store the photo in GCS if one was provided ---
     gcs_uri = None
     if img_bytes is not None:
+        # Filename example: kevin/inbox/20260728T121500_a1b2c3d4.jpg
+        # The random uuid suffix prevents collisions if two photos share a timestamp.
         blob_name = f"{user_id}/inbox/{capture_dt.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
         bucket = _storage.bucket(BUCKET.replace("gs://", ""))
         bucket.blob(blob_name).upload_from_string(img_bytes, content_type="image/jpeg")
@@ -154,6 +176,8 @@ def meal_upload(request):
     now_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=7)).replace(tzinfo=None).isoformat()
     row = {
         "user_id": user_id,
+        # Deterministic meal id (user + capture time) — the meal_web app uses
+        # this same id to find/edit/delete the meal later.
         "meal_id": f"{user_id}-{capture_dt.strftime('%Y%m%dT%H%M%S')}",
         "capture_ts": capture_iso,
         "upload_ts": now_iso,
@@ -163,14 +187,19 @@ def meal_upload(request):
         "fat_g": est.fat_g,
         "fiber_g": est.fiber_g,
         "calories": est.calories,
+        # Per-item breakdown stored as a JSON string in one column.
+        # model_dump() turns a pydantic object back into a plain dict.
         "items": json.dumps([i.model_dump() for i in est.items]),
         "gemini_confidence": est.confidence,
         "gemini_model": GEMINI_MODEL,
-        "user_corrected": False,
+        "user_corrected": False,   # flips to True if the user later edits macros in meal_web
         "notes": est.notes,
         "user_notes": notes or None,
         "source": "photo" if img_bytes is not None else "text",
     }
+    # insert_rows_json = streaming insert (returns a list of errors, empty on
+    # success). Fine here: meals arrive one at a time and are rarely re-written,
+    # unlike the sync tables which use delete-then-load for idempotency.
     errors = _bq.insert_rows_json(f"{PROJECT}.{BQ_DATASET}.{BQ_TABLE}", [row])
     if errors:
         return (json.dumps({"error": "bigquery insert failed", "details": errors}), 500)

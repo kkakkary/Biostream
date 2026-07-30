@@ -5,6 +5,13 @@ garmin-token-<user> secrets, idempotent by activity_id (delete-then-load).
 
 This exists to place exercise start/end markers on the post-prandial
 experiment timeline — garmin_daily has no activity data.
+
+HOW TO READ THIS FILE: it's a slimmed-down sibling of garmin_sync/main.py,
+which carries the detailed beginner annotations for the shared patterns
+(env-var config, secret discovery, _safe/_int coercion, delete-then-load).
+The one difference in the upsert: activities have a globally unique
+activity_id from Garmin, so idempotency keys on that id alone — no
+(user, date) pair needed.
 """
 
 from __future__ import annotations
@@ -28,11 +35,13 @@ _sm = secretmanager.SecretManagerServiceClient()
 
 
 def _token(user: str) -> str:
+    """Cached Garmin login token from Secret Manager (see garmin_sync)."""
     name = f"projects/{PROJECT}/secrets/garmin-token-{user}/versions/latest"
     return _sm.access_secret_version(name=name).payload.data.decode()
 
 
 def _users() -> list[str]:
+    """garmin-token-* secrets = connected users; GARMIN_USERS env overrides."""
     env = [u.strip() for u in os.environ.get("GARMIN_USERS", "").split(",") if u.strip()]
     if env:
         return env
@@ -45,6 +54,7 @@ def _users() -> list[str]:
 
 
 def _int(x):
+    """Coerce Garmin's float-ish numbers to int; anything else -> None (NULL)."""
     return int(round(x)) if isinstance(x, (int, float)) else None
 
 
@@ -60,18 +70,22 @@ def _ts(local: str | None) -> str | None:
 
 
 def _row(user: str, a: dict) -> dict | None:
+    """One Garmin activity -> one garmin_activities row.
+    Requires an id and a start time; everything else may be NULL."""
     activity_id = a.get("activityId")
     start = _ts(a.get("startTimeLocal"))
     if activity_id is None or start is None:
         return None
     duration = _int(a.get("duration"))
+    # Garmin gives start + duration; derive the end timestamp ourselves so the
+    # dashboard can draw an exercise window without doing date math.
     end = None
     if duration is not None:
         end = (dt.datetime.fromisoformat(start) + dt.timedelta(seconds=duration)).isoformat()
     return {
         "user_id": user,
         "activity_id": int(activity_id),
-        "activity_type": (a.get("activityType") or {}).get("typeKey"),
+        "activity_type": (a.get("activityType") or {}).get("typeKey"),   # e.g. "running"
         "activity_name": a.get("activityName"),
         "start_ts": start,
         "end_ts": end,
@@ -109,6 +123,9 @@ def garmin_activity_sync(request):
             g = Garmin()
             g.login(_token(user))
             activities = g.get_activities_by_date(start.isoformat(), end.isoformat())
+            # `:=` (the "walrus" operator) assigns _row's result to r *inside*
+            # the comprehension, so we can build the row and filter out the
+            # Nones in a single pass.
             rows = [r for a in activities if (r := _row(user, a)) is not None]
             if rows:
                 _upsert(rows)

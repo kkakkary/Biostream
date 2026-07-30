@@ -5,6 +5,17 @@ answers one question about the excursion that follows. Times are always
 minutes elapsed since the meal (matching how a clinician reads a CGM trace),
 never minutes since the peak — so time_to_peak and time_to_baseline are
 directly comparable and summable.
+
+HOW TO READ THIS FILE: cgm_meal_stats() at the bottom is the one function
+app.py calls; everything above it computes one statistic each. The shared
+vocabulary:
+
+  baseline  — your average glucose in the 30 min *before* the meal
+  excursion — how far glucose rises above that baseline after eating
+  AUC       — "area under the curve": total excursion x time, the single best
+              summary of how much a meal moved your glucose overall
+  velocity / acceleration — how *fast* the rise happened (first and second
+              derivatives of the curve on its way up to the peak)
 """
 
 import numpy as np
@@ -16,7 +27,9 @@ DEFAULT_POST_MEAL_HOURS = 15  # meal through ~next-morning
 
 def baseline_glucose(glucose: pd.DataFrame, meal_ts,
                      window_min: int = DEFAULT_BASELINE_WINDOW_MIN) -> float | None:
-    """Mean glucose in the window immediately before the meal."""
+    """Mean glucose in the window immediately before the meal.
+    Note `< meal_ts`, not `<=`: a reading at the exact meal instant belongs
+    to the response, not the baseline."""
     if glucose.empty:
         return None
     window = glucose[(glucose["ts"] >= meal_ts - pd.Timedelta(minutes=window_min)) &
@@ -34,6 +47,8 @@ def post_meal_window(glucose: pd.DataFrame, meal_ts,
     end = meal_ts + pd.Timedelta(hours=hours)
     df = glucose[(glucose["ts"] >= meal_ts) & (glucose["ts"] <= end)]
     df = df.dropna(subset=["glucose_mg_dl"]).sort_values("ts")
+    # reset_index renumbers rows 0,1,2,... — needed because .loc[:i] slicing
+    # in the functions below assumes labels equal positions.
     return df.reset_index(drop=True)
 
 
@@ -41,6 +56,12 @@ def glucose_auc(post_meal: pd.DataFrame, baseline: float | None) -> float | None
     """Incremental AUC above baseline (mg/dL·min), trapezoidal rule.
 
     Area below baseline doesn't count — a dip isn't a glucose response.
+
+    Mechanics: x-axis = minutes since the first reading; y-axis = how far each
+    reading sits above baseline (clipped at 0 so dips contribute nothing);
+    np.trapezoid sums the trapezoid strips between consecutive readings.
+    Using actual minutes as x means unevenly spaced readings are weighted
+    correctly — a value that held for 15 min counts 3x one that held for 5.
     """
     if baseline is None or len(post_meal) < 2:
         return None
@@ -50,7 +71,8 @@ def glucose_auc(post_meal: pd.DataFrame, baseline: float | None) -> float | None
 
 
 def glucose_peak(post_meal: pd.DataFrame) -> dict:
-    """Peak value and minutes-from-meal-start at which it occurred."""
+    """Peak value and minutes-from-meal-start at which it occurred.
+    idxmax() = index label of the maximum value (the peak's row)."""
     if post_meal.empty:
         return {"peak_mg_dl": None, "time_to_peak_min": None}
     i = post_meal["glucose_mg_dl"].idxmax()
@@ -61,11 +83,14 @@ def glucose_peak(post_meal: pd.DataFrame) -> dict:
 
 def time_to_baseline_min(post_meal: pd.DataFrame, baseline: float | None) -> float | None:
     """Minutes from meal start until glucose first falls back to <= baseline,
-    searching only after the peak. None if it never returns in the window."""
+    searching only after the peak. None if it never returns in the window.
+
+    Why only after the peak: glucose is usually AT baseline right after the
+    meal (it hasn't risen yet) — counting that would always give ~0."""
     if baseline is None or post_meal.empty:
         return None
     i = post_meal["glucose_mg_dl"].idxmax()
-    after_peak = post_meal.loc[i:]
+    after_peak = post_meal.loc[i:]                       # peak row onward
     returned = after_peak[after_peak["glucose_mg_dl"] <= baseline]
     if returned.empty:
         return None
@@ -74,7 +99,11 @@ def time_to_baseline_min(post_meal: pd.DataFrame, baseline: float | None) -> flo
 
 
 def glucose_rise_velocity(post_meal: pd.DataFrame) -> float | None:
-    """Peak rate of rise (mg/dL per minute) between meal start and the peak."""
+    """Peak rate of rise (mg/dL per minute) between meal start and the peak.
+
+    .diff() = change from the previous reading, so value-diff / time-diff is
+    the slope between each consecutive pair; .max() takes the steepest one.
+    """
     rising = _rising_segment(post_meal)
     if rising is None or len(rising) < 2:
         return None
@@ -85,7 +114,8 @@ def glucose_rise_velocity(post_meal: pd.DataFrame) -> float | None:
 
 def glucose_rise_acceleration(post_meal: pd.DataFrame) -> float | None:
     """Peak acceleration of rise (mg/dL per minute^2) between meal start and
-    the peak — needs at least 3 rising readings to define a 2nd derivative."""
+    the peak — needs at least 3 rising readings to define a 2nd derivative.
+    Same construction as velocity, applied once more (diff of the diffs)."""
     rising = _rising_segment(post_meal)
     if rising is None or len(rising) < 3:
         return None
@@ -96,6 +126,7 @@ def glucose_rise_acceleration(post_meal: pd.DataFrame) -> float | None:
 
 
 def _rising_segment(post_meal: pd.DataFrame) -> pd.DataFrame | None:
+    """Readings from the meal up to and including the peak — the 'way up'."""
     if post_meal.empty:
         return None
     i = post_meal["glucose_mg_dl"].idxmax()
@@ -105,7 +136,9 @@ def _rising_segment(post_meal: pd.DataFrame) -> pd.DataFrame | None:
 def cgm_meal_stats(glucose: pd.DataFrame, meal_ts,
                    baseline_window_min: int = DEFAULT_BASELINE_WINDOW_MIN,
                    post_meal_hours: int = DEFAULT_POST_MEAL_HOURS) -> dict:
-    """All CGM statistics for one meal, bundled for the Single Meal view."""
+    """All CGM statistics for one meal, bundled for the Single Meal view.
+    `**glucose_peak(window)` splices that function's two keys straight into
+    this dict (dict-unpacking)."""
     baseline = baseline_glucose(glucose, meal_ts, baseline_window_min)
     window = post_meal_window(glucose, meal_ts, post_meal_hours)
     auc = glucose_auc(window, baseline)
@@ -121,6 +154,8 @@ def cgm_meal_stats(glucose: pd.DataFrame, meal_ts,
     }
 
 
+# Maps internal stat keys -> human-readable table labels (also fixes the
+# display order of the Statistics table).
 STAT_LABELS = {
     "baseline_mg_dl": "Baseline glucose (mg/dL)",
     "auc_mg_dl_min": "Incremental AUC (mg/dL·min)",

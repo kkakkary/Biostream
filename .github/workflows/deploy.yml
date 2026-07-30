@@ -6,6 +6,13 @@ name: Deploy
 #
 # Redeploys are code-only: no --set-env-vars / --set-secrets / --trigger are
 # passed, so each service keeps its existing env vars, secrets, and triggers.
+#
+# HOW TO READ THIS FILE — three jobs, run in order:
+#   changes  detects which functions/<service> folders this push touched
+#   test     runs the whole pytest suite (deploys are blocked if it fails)
+#   deploy   one step per service, each guarded by an `if:` that checks the
+#            `changes` output — so pushing a dashboard tweak redeploys only
+#            the dashboard, not all eight services.
 
 on:
   push:
@@ -15,6 +22,7 @@ on:
       - '.github/workflows/deploy.yml'
   workflow_dispatch:        # allow manual runs (deploys everything)
 
+# Only one deploy run at a time; a second push queues instead of racing.
 concurrency:
   group: deploy-main
   cancel-in-progress: false

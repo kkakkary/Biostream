@@ -1,9 +1,18 @@
 """Plotly figure builders. Pure: dataframe in, go.Figure out.
 
-Palette follows the validated dataviz reference instance (light mode,
-surface #fcfcfb). One entity, one hue, everywhere it appears:
+Palette follows the validated dataviz reference instance, retuned to the
+MOAI brand surface (#f2f1ef, matching the logo's own background) with a
+purple-leaning neutral ramp. One entity, one hue, everywhere it appears:
 glucose=blue, HRV=violet, heart rate=red, steps=orange, stress=yellow,
 body battery / recovery=green. Sleep depth is an ordinal green ramp.
+
+HOW TO READ THIS FILE: each *_fig function assembles one chart the same way —
+    fig = go.Figure()          start empty
+    fig.add_trace(...)         add each line/bar series
+    fig.add_hrect/vline/...    add reference bands and event markers
+    fig = _layout(fig)         apply the shared house style
+Nothing here touches Streamlit or BigQuery; app.py passes dataframes in and
+renders the returned figure.
 """
 
 import pandas as pd
@@ -11,14 +20,16 @@ import plotly.graph_objects as go
 
 from transforms import GLUCOSE_RANGE_MG_DL, break_time_gaps, fill_date_gaps
 
-SURFACE = "#fcfcfb"
-GRID = "#e1e0d9"
-AXIS = "#c3c2b7"
-INK = "#0b0b0b"
-INK_2 = "#52514e"
-MUTED = "#898781"
-BAND = "#f0efec"  # neutral wash for reference ranges
+# --- House style constants (used by every chart) ----------------------------
+SURFACE = "#f2f1ef"   # chart background
+GRID = "#e3e0e6"
+AXIS = "#c7c2cc"
+INK = "#151022"       # darkest text
+INK_2 = "#4a4356"
+MUTED = "#8b8593"     # secondary text (axis labels, annotations)
+BAND = "#eae8ec"  # neutral wash for reference ranges
 
+# One entity = one hue, consistently across every chart on the page.
 BLUE = "#2a78d6"     # glucose
 VIOLET = "#4a3aa7"   # HRV
 RED = "#e34948"      # heart rate (resting + intraday)
@@ -31,6 +42,9 @@ FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
 
 def _layout(fig: go.Figure, height: int = 320, top: int = 8) -> go.Figure:
+    """Shared house style applied to every figure: background, font, margins,
+    unified hover (one tooltip for all series at a given x), quiet axes.
+    Legends default off; charts that need one re-enable it after calling this."""
     fig.update_layout(
         height=height,
         paper_bgcolor=SURFACE,
@@ -51,13 +65,19 @@ def _layout(fig: go.Figure, height: int = 320, top: int = 8) -> go.Figure:
 
 
 def glucose_fig(df: pd.DataFrame) -> go.Figure:
+    """Plain CGM trace with the 70–180 target band behind it."""
+    # break_time_gaps: no line drawn across sensor gaps > 30 min (see transforms.py).
     df = break_time_gaps(df, "ts", pd.Timedelta(minutes=30))
     lo, hi = GLUCOSE_RANGE_MG_DL
     fig = go.Figure()
+    # hrect = horizontal band across the whole x-range; layer="below" keeps it
+    # behind the data line.
     fig.add_hrect(y0=lo, y1=hi, fillcolor=BAND, line_width=0, layer="below")
     fig.add_trace(go.Scatter(
         x=df["ts"], y=df["glucose_mg_dl"], mode="lines",
         line=dict(color=BLUE, width=2, shape="spline", smoothing=0.6),
+        # hovertemplate: tooltip text; <extra></extra> suppresses the default
+        # trace-name box Plotly would otherwise append.
         name="Glucose", hovertemplate="%{y:.0f} mg/dL<extra></extra>",
     ))
     fig.add_annotation(x=0, xref="paper", y=hi, yanchor="bottom",
@@ -69,6 +89,7 @@ def glucose_fig(df: pd.DataFrame) -> go.Figure:
 
 
 def sleep_fig(stages: pd.DataFrame) -> go.Figure:
+    """Stacked nightly bars: deep at the bottom, then REM, then light."""
     fig = go.Figure()
     for stage in ["Deep", "REM", "Light"]:  # deep anchored at the baseline
         fig.add_trace(go.Bar(
@@ -84,6 +105,7 @@ def sleep_fig(stages: pd.DataFrame) -> go.Figure:
 
 
 def hrv_fig(daily: pd.DataFrame) -> go.Figure:
+    """Daily average HRV. fill_date_gaps makes missing days break the line."""
     df = fill_date_gaps(daily.dropna(subset=["hrv_avg"]))
     fig = go.Figure(go.Scatter(
         x=df["date"], y=df["hrv_avg"], mode="lines+markers",
@@ -128,7 +150,11 @@ EXERCISE_BAND = "rgba(235, 104, 52, 0.12)"  # translucent orange wash
 def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
                       bp: pd.DataFrame, meal_ts, baseline: float | None) -> go.Figure:
     """Single Meal view: CGM anchored on the meal, with exercise windows and
-    next-morning BP drawn as overlays."""
+    next-morning BP drawn as overlays.
+
+    Layered from back to front: target band -> baseline line -> glucose trace
+    -> meal marker -> exercise bands -> BP markers.
+    """
     fig = go.Figure()
 
     lo, hi = GLUCOSE_RANGE_MG_DL
@@ -140,10 +166,13 @@ def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
                              line=dict(color=BLUE, width=2),
                              hovertemplate="%{y:.0f} mg/dL<extra></extra>"))
 
+    # vline = vertical marker at one instant (the meal).
     fig.add_vline(x=meal_ts, line=dict(color=INK_2, width=2, dash="dash"),
                  annotation_text="Meal", annotation_position="top",
                  annotation_font=dict(color=INK_2, size=11))
 
+    # vrect = shaded span (start -> end of each workout).
+    # iterrows() yields (index, row) pairs; `_` discards the index.
     for _, a in activities.iterrows():
         end = a["end_ts"] if pd.notna(a["end_ts"]) else a["start_ts"]
         fig.add_vrect(x0=a["start_ts"], x1=end, fillcolor=EXERCISE_BAND, line_width=0,
@@ -165,7 +194,9 @@ def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
 def paired_cgm_overlay_fig(window_a: pd.DataFrame, window_b: pd.DataFrame,
                            label_a: str, label_b: str) -> go.Figure:
     """Paired Meal Experiment overlay: both meals' CGM excursions on a shared
-    'minutes since meal' axis so the two curves are directly comparable."""
+    'minutes since meal' axis so the two curves are directly comparable.
+    (Each window's first reading is its meal time — see post_meal_window —
+    so subtracting it converts wall-clock time to minutes-since-meal.)"""
     fig = go.Figure()
     lo, hi = GLUCOSE_RANGE_MG_DL
     fig.add_hrect(y0=lo, y1=hi, fillcolor=BAND, line_width=0, layer="below")
@@ -185,7 +216,12 @@ def paired_cgm_overlay_fig(window_a: pd.DataFrame, window_b: pd.DataFrame,
 
 def overnight_hrv_glucose_fig(hrv: pd.DataFrame, glucose: pd.DataFrame) -> go.Figure:
     """HRV during the night's sleep (violet, left axis) paired with glucose
-    (blue, right axis) over the same overnight window."""
+    (blue, right axis) over the same overnight window.
+
+    Dual-axis mechanics: the glucose trace declares yaxis="y2", and the
+    layout's yaxis2 has overlaying="y" (drawn on the same plot area) and
+    side="right" — two different scales sharing one time axis.
+    """
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=hrv["ts"], y=hrv["hrv_value"], mode="lines+markers", name="HRV",

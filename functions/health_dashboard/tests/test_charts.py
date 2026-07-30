@@ -1,9 +1,15 @@
+"""Tests for charts.py — build a figure from tiny data, then inspect the
+figure OBJECT (its traces, shapes, layout) rather than rendering pixels.
+That's the standard way to test plotting code: assert on structure, not looks.
+"""
+
 import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+# Make the parent folder importable so `import charts` works under pytest.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import charts  # noqa: E402
