@@ -102,33 +102,40 @@ def _meal_card(row):
             m4.metric("Fat (g)", f"{row['fat_g']:.0f}" if pd.notna(row["fat_g"]) else "—")
 
 
-def _load_meal_window(meal_ts):
-    """Single Meal view: fixed window around the meal (10 min before,
-    4 hours after) -- tight enough to anchor on the spike, wide enough to
-    see the full return toward baseline."""
-    start = meal_ts - pd.Timedelta(minutes=10)
-    end = meal_ts + pd.Timedelta(hours=4)
+def _load_meal_window(meal_ts, pre_meal_min: int, post_meal_hours: int):
+    """Single Meal view: window around the meal, user-adjustable via the
+    sliders below the meal picker — a tight pre-meal span anchors the chart
+    on the spike; widen it to see pre-meal context."""
+    start = meal_ts - pd.Timedelta(minutes=pre_meal_min)
+    end = meal_ts + pd.Timedelta(hours=post_meal_hours)
     return {
         "glucose": data.load_glucose_window(start, end),
-        "activities": data.load_activities_window(start, end),
+        # Activities always look 2h back (regardless of the glucose slider) so
+        # a pre-meal walk keeps its band on the chart and stays consistent
+        # with the ±2h Post-Meal Activity card above.
+        "activities": data.load_activities_window(meal_ts - pd.Timedelta(hours=2), end),
         # BP is sparse (a reading or two a day), so look much further ahead.
         "bp": data.load_bp_window(meal_ts, meal_ts + pd.Timedelta(hours=36)),
     }
 
 
 def _activity_section(meal_ts):
-    """Show the Garmin activity (if any) that started within 2 hours after
+    """Show the Garmin activity (if any) that started within +/- 2 hours of
     the meal — e.g. a post-meal walk — with its own metrics row."""
     with st.container(border=True):
         st.subheader("🏃 Post-Meal Activity")
         paired = data.load_activities_window(meal_ts - pd.Timedelta(hours=2), meal_ts + pd.Timedelta(hours=2))
         if paired.empty:
-            st.caption("No activity logged in the 2 hours after this meal.")
+            st.caption("No activity logged in the 2 hours before and after this meal.")
             return
 
         a = paired.iloc[0]   # .iloc[0] = first row; earliest activity in the window
         mins_after = round((a["start_ts"] - meal_ts).total_seconds() / 60)
-        st.caption(f"**{a['activity_name']}** — started {mins_after} min after this meal")
+        min_before = round((meal_ts - a["start_ts"]).total_seconds() / 60)
+        if min_before > 0: # means that the activity happened before the meal
+            st.caption(f"**{a['activity_name']}** — started {min_before} min before this meal")
+        else:
+            st.caption(f"**{a['activity_name']}** — started {mins_after} min after this meal")
 
         cols = st.columns(4)
         cols[0].metric("Type", a["activity_type"].title() if pd.notna(a["activity_type"]) else "—")
@@ -193,7 +200,16 @@ if view == "Single Meal":
     _meal_card(meal)
     _activity_section(meal_ts)
 
-    window = _load_meal_window(meal_ts)
+    # Chart-window knobs. Sliders return their current value on every rerun
+    # (args: label, min, max, default); cache_data means each setting is
+    # queried from BigQuery once, then served from cache.
+    pre_col, post_col = st.columns(2)
+    with pre_col:
+        pre_meal_min = st.slider("Minutes shown before meal", 10, 120, 10, step=10)
+    with post_col:
+        post_meal_hours = st.slider("Hours shown after meal", 2, 8, 4)
+
+    window = _load_meal_window(meal_ts, pre_meal_min, post_meal_hours)
 
     if window["glucose"].empty:
         st.warning("No CGM readings in this window — nothing to analyze for this meal.")
