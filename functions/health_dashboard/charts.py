@@ -176,7 +176,9 @@ def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
     for _, a in activities.iterrows():
         end = a["end_ts"] if pd.notna(a["end_ts"]) else a["start_ts"]
         fig.add_vrect(x0=a["start_ts"], x1=end, fillcolor=EXERCISE_BAND, line_width=0,
-                     annotation_text=a["activity_type"] or "Exercise",
+                     # pd.notna, not `or`: a missing type is NaN/NA, not falsy.
+                     annotation_text=(a["activity_type"]
+                                      if pd.notna(a["activity_type"]) else "Exercise"),
                      annotation_position="top left",
                      annotation_font=dict(color=ORANGE, size=10))
 
@@ -191,22 +193,82 @@ def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
     return fig
 
 
+# Per-meal exercise washes for the paired overlay: same 12% alpha as
+# EXERCISE_BAND, but tinted with each curve's hue so a band is visually
+# tied to the meal it belongs to (blue wash = Meal A, orange wash = Meal B).
+EXERCISE_BAND_BLUE = "rgba(42, 120, 214, 0.12)"    # translucent BLUE
+EXERCISE_BAND_ORANGE = "rgba(235, 104, 52, 0.12)"  # translucent ORANGE
+
+
 def paired_cgm_overlay_fig(window_a: pd.DataFrame, window_b: pd.DataFrame,
-                           label_a: str, label_b: str) -> go.Figure:
+                           label_a: str, label_b: str,
+                           activities_a: pd.DataFrame | None = None,
+                           activities_b: pd.DataFrame | None = None,
+                           meal_ts_a=None, meal_ts_b=None) -> go.Figure:
     """Paired Meal Experiment overlay: both meals' CGM excursions on a shared
     'minutes since meal' axis so the two curves are directly comparable.
-    (Each window's first reading is its meal time — see post_meal_window —
-    so subtracting it converts wall-clock time to minutes-since-meal.)"""
+    (Minute 0 is the true meal timestamp when meal_ts_a/b are passed; older
+    callers that omit them fall back to each window's first reading, which
+    post_meal_window guarantees is at/just after the meal.)
+
+    Optionally also marks WHEN things happened: a dashed line at minute 0
+    (the meal itself — shared by both curves, since 0 is each meal by
+    construction) and a shaded band per Garmin activity, tinted with its
+    meal's curve color. The activity args default to None so older callers
+    (and tests) that pass only the two windows keep working unchanged.
+    """
     fig = go.Figure()
     lo, hi = GLUCOSE_RANGE_MG_DL
     fig.add_hrect(y0=lo, y1=hi, fillcolor=BAND, line_width=0, layer="below")
-    for window, label, color in [(window_a, label_a, BLUE), (window_b, label_b, ORANGE)]:
-        if window.empty:
-            continue
-        minutes = (window["ts"] - window["ts"].iloc[0]).dt.total_seconds() / 60
-        fig.add_trace(go.Scatter(x=minutes, y=window["glucose_mg_dl"], mode="lines",
-                                 name=label, line=dict(color=color, width=2),
-                                 hovertemplate="%{y:.0f} mg/dL<extra>" + label + "</extra>"))
+
+    # One pass per meal: draw its CGM curve, then its exercise bands.
+    # The tuple also carries a short tag ("A"/"B") for band labels, the wash
+    # color matching the curve, and where to pin the band annotation —
+    # A's labels sit at the top, B's at the bottom, so they never collide.
+    for window, label, color, activities, meal_ts, tag, wash, ann_pos in [
+        (window_a, label_a, BLUE, activities_a, meal_ts_a, "A",
+         EXERCISE_BAND_BLUE, "top left"),
+        (window_b, label_b, ORANGE, activities_b, meal_ts_b, "B",
+         EXERCISE_BAND_ORANGE, "bottom left"),
+    ]:
+        # Anchor: the instant that counts as minute 0 for this meal — shared
+        # by the curve AND its activity bands, so the two can never drift
+        # apart. Prefer the true meal timestamp; fall back to the window's
+        # first reading (which post_meal_window guarantees is at/just after
+        # the meal — "just after" is why the fallback alone isn't enough: a
+        # sensor gap at mealtime would shift curve and bands out of sync).
+        anchor = meal_ts if meal_ts is not None else (
+            window["ts"].iloc[0] if not window.empty else None)
+
+        if not window.empty:
+            minutes = (window["ts"] - anchor).dt.total_seconds() / 60
+            fig.add_trace(go.Scatter(x=minutes, y=window["glucose_mg_dl"], mode="lines",
+                                     name=label, line=dict(color=color, width=2),
+                                     hovertemplate="%{y:.0f} mg/dL<extra>" + label + "</extra>"))
+        if activities is None or anchor is None:
+            continue    # no activities passed, or nothing to anchor them to
+        for _, a in activities.iterrows():
+            # Some activities lack an end_ts; treat them as instantaneous.
+            end_ts = a["end_ts"] if pd.notna(a["end_ts"]) else a["start_ts"]
+            # Wall-clock -> minutes since THIS meal. Pre-meal activities land
+            # at negative minutes on purpose (a pre-meal walk should show).
+            x0 = (a["start_ts"] - anchor).total_seconds() / 60
+            x1 = (end_ts - anchor).total_seconds() / 60
+            # pd.notna, not `or`: a missing activity_type arrives as NaN/NA
+            # (truthy or even un-boolable in pandas), which `or` mishandles.
+            kind = a["activity_type"] if pd.notna(a["activity_type"]) else "Exercise"
+            fig.add_vrect(x0=x0, x1=x1, fillcolor=wash, line_width=0,
+                          # e.g. "walking (A)" — activity type + which meal,
+                          # colored to match that meal's curve.
+                          annotation_text=f"{kind} ({tag})",
+                          annotation_position=ann_pos,
+                          annotation_font=dict(color=color, size=10))
+
+    # Minute 0 IS the meal for both curves, so one shared dashed marker.
+    fig.add_vline(x=0, line=dict(color=INK_2, width=2, dash="dash"),
+                  annotation_text="Meal", annotation_position="top",
+                  annotation_font=dict(color=INK_2, size=11))
+
     fig = _layout(fig, height=380)
     fig.update_layout(showlegend=True)
     fig.update_xaxes(title_text="minutes since meal", title_font=dict(color=MUTED))

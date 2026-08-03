@@ -79,6 +79,51 @@ def test_paired_cgm_overlay_fig_uses_minutes_since_meal_axis():
     assert list(fig.data[0].x) == [0.0, 30.0]  # minutes since meal, not wall-clock
 
 
+def test_paired_cgm_overlay_fig_marks_meal_and_activity_bands():
+    # Two meals on different days — the overlay must line them up anyway,
+    # because everything is converted to minutes-since-EACH-meal.
+    meal_a = pd.Timestamp("2026-07-18 19:00", tz="UTC")
+    meal_b = pd.Timestamp("2026-07-20 12:00", tz="UTC")
+
+    def _window(meal_ts):
+        return pd.DataFrame({
+            "ts": [meal_ts, meal_ts + pd.Timedelta(minutes=30)],
+            "glucose_mg_dl": [100.0, 150.0],
+        })
+
+    def _walk(start, end):
+        return pd.DataFrame({
+            "activity_id": [1], "activity_type": ["walking"], "activity_name": ["walk"],
+            "start_ts": [start], "end_ts": [end],
+        })
+
+    # A walked 60–90 min AFTER the meal; B walked 30–10 min BEFORE it.
+    acts_a = _walk(meal_a + pd.Timedelta(minutes=60), meal_a + pd.Timedelta(minutes=90))
+    acts_b = _walk(meal_b - pd.Timedelta(minutes=30), meal_b - pd.Timedelta(minutes=10))
+
+    fig = charts.paired_cgm_overlay_fig(_window(meal_a), _window(meal_b), "Meal A", "Meal B",
+                                        activities_a=acts_a, activities_b=acts_b,
+                                        meal_ts_a=meal_a, meal_ts_b=meal_b)
+
+    # Meal marker: a dashed vertical LINE shape at x=0 (shared by both meals).
+    lines = [s for s in fig.layout.shapes if s.type == "line"]
+    assert any(s.x0 == 0 and s.line.dash == "dash" for s in lines)
+
+    # Activity bands: RECT shapes at minutes-since-their-own-meal, each tinted
+    # with its meal's wash. A's walk spans +60..+90; B's spans -30..-10
+    # (negative = pre-meal, deliberately not clamped).
+    rects = {s.fillcolor: (s.x0, s.x1)
+             for s in fig.layout.shapes if s.type == "rect" and s.fillcolor != charts.BAND}
+    assert rects[charts.EXERCISE_BAND_BLUE] == (60.0, 90.0)
+    assert rects[charts.EXERCISE_BAND_ORANGE] == (-30.0, -10.0)
+
+    # Band labels say what happened and whose meal it was, colored to match.
+    texts = {a.text: a.font.color for a in fig.layout.annotations}
+    assert texts.get("walking (A)") == charts.BLUE
+    assert texts.get("walking (B)") == charts.ORANGE
+    assert "Meal" in texts  # the minute-0 marker is annotated too
+
+
 def test_sleep_fig_stacks_three_stages():
     df = pd.DataFrame({
         "date": pd.to_datetime(["2026-07-18"]),
