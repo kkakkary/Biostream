@@ -142,10 +142,13 @@ jobs:
             --region="$REGION" --project="$PROJECT" --quiet
 
       # Post-prandial experiment dashboard (meal photos + clinical stats).
-      # CAUTION: the page has a subject picker for everyone in data.py's
-      # SUBJECTS list, and --allow-unauthenticated makes the URL public —
-      # anyone with the link can read every subject's health data until the
-      # service is put behind auth (IAP or --no-allow-unauthenticated).
+      # --allow-unauthenticated makes the URL public, which is intended for
+      # Kevin's own data. The header's subject picker also offers the other
+      # subjects in data.py's SUBJECTS, so those are gated behind per-subject
+      # passwords in auth.py, read from DASHBOARD_PASSWORD_<SUBJECT> env vars.
+      # Set those on the service (Console or `gcloud run services update`) —
+      # this deploy passes no --set-env-vars, so it preserves them but will
+      # never create them. A subject whose variable is missing stays locked.
       - name: health-dashboard
         if: ${{ needs.changes.outputs.health_dashboard == 'true' || github.event_name == 'workflow_dispatch' }}
         run: |

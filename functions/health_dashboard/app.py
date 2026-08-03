@@ -35,6 +35,7 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
+import auth
 import charts
 import data
 import experiment
@@ -197,6 +198,14 @@ st.caption(
     "exercise changes the response. Fed live from the Biostream pipeline "
     "(Garmin, FreeStyle Libre CGM, Omron BP)."
 )
+
+# ---- Password gate ---------------------------------------------------------
+# Kevin's view is open; the other subjects need a password (see auth.py).
+# This sits ABOVE every data.load_* call on purpose: st.stop() halts the
+# script right here, so a viewer who hasn't unlocked a subject never reaches
+# a query and never sees a row of that subject's data.
+if not auth.gate(user_id):
+    st.stop()
 
 # The view toggle. segmented_control returns None until first clicked,
 # hence the `or "Single Meal"` fallback.
