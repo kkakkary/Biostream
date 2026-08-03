@@ -141,8 +141,11 @@ jobs:
           gcloud run deploy meal-web --source=functions/meal_web \
             --region="$REGION" --project="$PROJECT" --quiet
 
-      # Public post-prandial experiment dashboard (meal photos + clinical
-      # stats, kevin only — USER_ID is hardcoded in data.py).
+      # Post-prandial experiment dashboard (meal photos + clinical stats).
+      # CAUTION: the page has a subject picker for everyone in data.py's
+      # SUBJECTS list, and --allow-unauthenticated makes the URL public —
+      # anyone with the link can read every subject's health data until the
+      # service is put behind auth (IAP or --no-allow-unauthenticated).
       - name: health-dashboard
         if: ${{ needs.changes.outputs.health_dashboard == 'true' || github.event_name == 'workflow_dispatch' }}
         run: |

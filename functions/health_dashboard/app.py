@@ -1,8 +1,12 @@
-"""Biostream — post-prandial (N-of-1) experiment view for Kevin.
+"""Biostream — post-prandial (N-of-1) experiment view.
 
 Streamlit on Cloud Run, private. Answers one question per meal: what did
 this food do to glucose, and — when paired against a similar meal with or
 without post-meal exercise — did the exercise change the response?
+
+One subject at a time, chosen with the picker in the page header; the id is
+threaded down into every data.load_* call rather than read from a global, so
+Streamlit's per-argument cache keeps the subjects' data separate.
 
 HRV coverage in this pipeline is currently limited to roughly 5am-3pm daily
 (Garmin's overnight/wake-window algorithm), not the evening post-meal period
@@ -102,29 +106,30 @@ def _meal_card(row):
             m4.metric("Fat (g)", f"{row['fat_g']:.0f}" if pd.notna(row["fat_g"]) else "—")
 
 
-def _load_meal_window(meal_ts, pre_meal_min: int, post_meal_hours: int):
+def _load_meal_window(user_id: str, meal_ts, pre_meal_min: int, post_meal_hours: int):
     """Single Meal view: window around the meal, user-adjustable via the
     sliders below the meal picker — a tight pre-meal span anchors the chart
     on the spike; widen it to see pre-meal context."""
     start = meal_ts - pd.Timedelta(minutes=pre_meal_min)
     end = meal_ts + pd.Timedelta(hours=post_meal_hours)
     return {
-        "glucose": data.load_glucose_window(start, end),
+        "glucose": data.load_glucose_window(user_id, start, end),
         # Activities always look 2h back (regardless of the glucose slider) so
         # a pre-meal walk keeps its band on the chart and stays consistent
         # with the ±2h Post-Meal Activity card above.
-        "activities": data.load_activities_window(meal_ts - pd.Timedelta(hours=2), end),
+        "activities": data.load_activities_window(user_id, meal_ts - pd.Timedelta(hours=2), end),
         # BP is sparse (a reading or two a day), so look much further ahead.
-        "bp": data.load_bp_window(meal_ts, meal_ts + pd.Timedelta(hours=36)),
+        "bp": data.load_bp_window(user_id, meal_ts, meal_ts + pd.Timedelta(hours=36)),
     }
 
 
-def _activity_section(meal_ts):
+def _activity_section(user_id: str, meal_ts):
     """Show the Garmin activity (if any) that started within +/- 2 hours of
     the meal — e.g. a post-meal walk — with its own metrics row."""
     with st.container(border=True):
         st.subheader("🏃 Post-Meal Activity")
-        paired = data.load_activities_window(meal_ts - pd.Timedelta(hours=2), meal_ts + pd.Timedelta(hours=2))
+        paired = data.load_activities_window(user_id, meal_ts - pd.Timedelta(hours=2),
+                                             meal_ts + pd.Timedelta(hours=2))
         if paired.empty:
             st.caption("No activity logged in the 2 hours before and after this meal.")
             return
@@ -148,31 +153,45 @@ def _activity_section(meal_ts):
             st.caption(f"Distance: {a['distance_m'] / 1609.34:.2f} mi")   # meters -> miles
 
 
-def _overnight_hrv_section(meal_ts):
+def _overnight_hrv_section(user_id: str, meal_ts):
     """HRV (paired with glucose) for the night following the meal — Garmin
     attributes a night's sleep to the following morning's calendar date."""
     with st.container(border=True):
         st.subheader("😴 Overnight HRV")
         # normalize() zeroes the time-of-day; +1 day = the morning after.
         sleep_date = (meal_ts.normalize() + pd.Timedelta(days=1)).date()
-        hrv = data.load_hrv_for_sleep_date(sleep_date.isoformat())
+        hrv = data.load_hrv_for_sleep_date(user_id, sleep_date.isoformat())
         if hrv.empty:
             st.caption(f"No HRV data recorded for the night of {sleep_date.strftime('%b %d')}.")
             return
 
         # Fetch glucose covering the same span as the HRV readings, so the
         # two lines share one x-axis.
-        glucose = data.load_glucose_window(hrv["ts"].min(), hrv["ts"].max())
+        glucose = data.load_glucose_window(user_id, hrv["ts"].min(), hrv["ts"].max())
         fig = charts.overnight_hrv_glucose_fig(hrv, glucose)
         st.plotly_chart(fig, use_container_width=True)
 
 
 # ---- Page starts rendering here (top of the visible page) ------------------
-logo_col, title_col = st.columns([1, 11], vertical_alignment="center")
+# Three columns across the header: logo, title, subject picker. Note the
+# `with` blocks run out of visual order on purpose — the title text depends on
+# which subject is picked, and a widget's value only exists after the widget is
+# created. Columns place content by *which* column it went into, not by the
+# order the blocks ran, so building the picker first costs nothing visually.
+logo_col, title_col, user_col = st.columns([1, 8, 3], vertical_alignment="center")
+with user_col:
+    # Options come straight from data.SUBJECTS so the picker can't offer a
+    # subject the loaders would reject. format_func only changes the *label*
+    # ("kevin" -> "Kevin"); the value handed back is still the raw id the
+    # BigQuery rows use. Like the View control below, segmented_control returns
+    # None when nothing is selected, hence the `or` fallback.
+    user_id = st.segmented_control("Subject", options=data.SUBJECTS,
+                                   default=data.DEFAULT_SUBJECT,
+                                   format_func=str.title) or data.DEFAULT_SUBJECT
 with logo_col:
     st.image(str(LOGO_PATH), width=64)
 with title_col:
-    st.title("Kevin — Post-Prandial Experiment")
+    st.title(f"{user_id.title()} — Post-Prandial Experiment")
 st.caption(
     "N-of-1 CGM analysis: how meals move glucose, and whether post-meal "
     "exercise changes the response. Fed live from the Biostream pipeline "
@@ -184,9 +203,11 @@ st.caption(
 view = st.segmented_control("View", options=["Single Meal", "Paired Meal Experiment"],
                             default="Single Meal", label_visibility="collapsed") or "Single Meal"
 
-meals = data.load_meals()
+# Every load_* call below takes user_id, so switching subjects re-keys the
+# cache and re-queries rather than reusing the previous subject's frames.
+meals = data.load_meals(user_id)
 if meals.empty:
-    st.info("No meals logged yet.")
+    st.info(f"No meals logged yet for {user_id.title()}.")
     st.stop()   # halts the script — nothing below renders
 # Add a _label column (the dropdown text) by applying _meal_label to each row.
 meals = meals.assign(_label=meals.apply(_meal_label, axis=1))
@@ -198,7 +219,7 @@ if view == "Single Meal":
     meal_ts = meal["capture_ts"]
 
     _meal_card(meal)
-    _activity_section(meal_ts)
+    _activity_section(user_id, meal_ts)
 
     # Chart-window knobs. Sliders return their current value on every rerun
     # (args: label, min, max, default); cache_data means each setting is
@@ -209,7 +230,7 @@ if view == "Single Meal":
     with post_col:
         post_meal_hours = st.slider("Hours shown after meal", 2, 8, 4)
 
-    window = _load_meal_window(meal_ts, pre_meal_min, post_meal_hours)
+    window = _load_meal_window(user_id, meal_ts, pre_meal_min, post_meal_hours)
 
     if window["glucose"].empty:
         st.warning("No CGM readings in this window — nothing to analyze for this meal.")
@@ -224,7 +245,7 @@ if view == "Single Meal":
         if window["bp"].empty:
             st.caption("No blood-pressure reading in the following ~36 hours.")
 
-    _overnight_hrv_section(meal_ts)
+    _overnight_hrv_section(user_id, meal_ts)
 
 else:  # Paired Meal Experiment
     st.caption(
@@ -257,9 +278,11 @@ else:  # Paired Meal Experiment
 
     # Each meal's glucose window: 30 min before (to establish baseline)
     # through `hours_after` after.
-    win_a = data.load_glucose_window(meal_a["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
+    win_a = data.load_glucose_window(user_id,
+                                     meal_a["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
                                      meal_a["capture_ts"] + pd.Timedelta(hours=hours_after))
-    win_b = data.load_glucose_window(meal_b["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
+    win_b = data.load_glucose_window(user_id,
+                                     meal_b["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
                                      meal_b["capture_ts"] + pd.Timedelta(hours=hours_after))
 
     if win_a.empty or win_b.empty:
@@ -274,9 +297,21 @@ else:  # Paired Meal Experiment
     post_a = experiment.post_meal_window(win_a, meal_a["capture_ts"], hours_after)
     post_b = experiment.post_meal_window(win_b, meal_b["capture_ts"], hours_after)
 
+    # Each meal's Garmin activities, so the overlay can shade WHEN exercise
+    # happened relative to each meal. The 2-hour lookback matches the Single
+    # Meal view's convention: a pre-meal walk still counts as context.
+    acts_a = data.load_activities_window(user_id, meal_a["capture_ts"] - pd.Timedelta(hours=2),
+                                         meal_a["capture_ts"] + pd.Timedelta(hours=hours_after))
+    acts_b = data.load_activities_window(user_id, meal_b["capture_ts"] - pd.Timedelta(hours=2),
+                                         meal_b["capture_ts"] + pd.Timedelta(hours=hours_after))
+
     with st.container(border=True):
         st.subheader("🩸 Glucose Overlay")
-        fig = charts.paired_cgm_overlay_fig(post_a, post_b, "Meal A", "Meal B")
+        # Meal timestamps anchor each activity to minutes-since-ITS-meal.
+        fig = charts.paired_cgm_overlay_fig(post_a, post_b, "Meal A", "Meal B",
+                                            activities_a=acts_a, activities_b=acts_b,
+                                            meal_ts_a=meal_a["capture_ts"],
+                                            meal_ts_b=meal_b["capture_ts"])
         st.plotly_chart(fig, use_container_width=True)
 
     with st.container(border=True):
