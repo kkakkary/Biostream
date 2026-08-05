@@ -129,3 +129,60 @@ def test_compare_meal_stats_delta_none_when_either_side_missing():
     table = experiment.compare_meal_stats({"peak_mg_dl": 150.0}, {"peak_mg_dl": None})
     peak_row = table[table["Statistic"] == "Peak glucose (mg/dL)"].iloc[0]
     assert peak_row["Δ (B − A)"] is None
+
+
+# --- The protocol rule: which activity counts as a meal's post-meal exercise ---
+
+def _activities(*offsets_min):
+    """Activities starting at the given offsets (minutes) from MEAL_TS.
+    Negative = before the meal."""
+    return pd.DataFrame({
+        "activity_id": range(len(offsets_min)),
+        "activity_type": ["walking"] * len(offsets_min),
+        "start_ts": [MEAL_TS + pd.Timedelta(minutes=m) for m in offsets_min],
+        "end_ts": [MEAL_TS + pd.Timedelta(minutes=m + 30) for m in offsets_min],
+    })
+
+
+def test_has_post_meal_exercise_accepts_activity_inside_the_window():
+    # A walk 45 min after eating is the intervention this experiment is about.
+    assert experiment.has_post_meal_exercise(_activities(45), MEAL_TS) is True
+
+
+def test_has_post_meal_exercise_rejects_activity_past_the_window():
+    # 121 min out is a different event in the day, not this meal's exercise —
+    # the excursion it was meant to blunt is already over.
+    assert experiment.has_post_meal_exercise(_activities(121), MEAL_TS) is False
+    assert experiment.has_post_meal_exercise(_activities(300), MEAL_TS) is False
+    # ...and the boundary itself counts (<=, not <).
+    assert experiment.has_post_meal_exercise(_activities(120), MEAL_TS) is True
+
+
+def test_has_post_meal_exercise_rejects_pre_meal_activity():
+    # A walk BEFORE the meal doesn't make it an exercise arm, however close.
+    assert experiment.has_post_meal_exercise(_activities(-30), MEAL_TS) is False
+
+
+def test_has_post_meal_exercise_false_with_no_activities():
+    assert experiment.has_post_meal_exercise(_activities(), MEAL_TS) is False
+
+
+def test_activities_around_meal_keeps_pre_meal_context_when_asked():
+    # The charts pass before_min so a pre-meal walk still draws (at negative
+    # minutes); the arm test above deliberately does not.
+    acts = _activities(-30, 45, 300)
+
+    protocol_only = experiment.activities_around_meal(acts, MEAL_TS)
+    with_context = experiment.activities_around_meal(acts, MEAL_TS,
+                                                     before_min=120, after_min=120)
+
+    assert len(protocol_only) == 1          # just the +45 walk
+    assert len(with_context) == 2           # -30 and +45; +300 is out either way
+
+
+def test_activities_around_meal_judges_on_start_not_overlap():
+    # An activity that began before the window but ran into it is not this
+    # meal's: start_ts is what decides.
+    late_start = _activities(200)
+    late_start.loc[0, "end_ts"] = MEAL_TS + pd.Timedelta(minutes=400)
+    assert experiment.activities_around_meal(late_start, MEAL_TS).empty

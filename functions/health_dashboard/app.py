@@ -20,6 +20,15 @@ user changes any widget (picks a meal, moves a slider), and whatever the
 script st.*-writes ends up on the page in order. So read this file like a
 page rendering from top to bottom.
 
+Two escape hatches from that full rerun, both used below:
+  @st.fragment  — a function whose widgets re-run only IT, not the page
+                  (see _paired_experiment); use it when a widget's effect is
+                  real but local.
+  client-side   — a control Plotly handles in the browser, so there's no
+                  rerun at all (the Single Meal chart's zoom buttons); use it
+                  when a control changes only what's DRAWN, not what's
+                  computed.
+
 The module split:
     data.py       — every BigQuery/GCS read (all cached)
     transforms.py — small dataframe reshaping helpers
@@ -59,6 +68,26 @@ h3 { color: #35126A; }
 DEFAULT_POST_MEAL_HOURS = 15   # default slider value in the paired view
 BASELINE_WINDOW_MIN = 30       # minutes before the meal used as "baseline" glucose
 
+# Single Meal fetches ONE generous window per meal and lets the reader zoom
+# inside it in the browser (see charts.meal_timeline_fig). Generous on purpose:
+# every zoom preset has to be already-fetched data, or zooming would mean a
+# rerun and a query. Statistics are computed over this full window too, so they
+# don't shift as the reader zooms.
+SINGLE_MEAL_PRE_MIN = 120      # minutes of pre-meal context fetched
+SINGLE_MEAL_POST_HOURS = 8     # hours of post-meal response fetched
+
+# Shared Plotly toolbar settings for every chart on the page.
+#   displaylogo            — off: it's an outbound link to plotly.com, and this
+#                            is a private health page that shouldn't advertise.
+#   modeBarButtonsToRemove — the selection tools do nothing useful on time
+#                            series (there's nothing downstream of a selection).
+#   scrollZoom             — on: wheel-zoom the time axis, no toolbar needed.
+PLOTLY_CONFIG = {
+    "displaylogo": False,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+    "scrollZoom": True,
+}
+
 
 def _meal_items(items_json) -> list[dict]:
     """The meals table stores the per-food breakdown as a JSON string
@@ -84,6 +113,14 @@ def _meal_label(row) -> str:
     return f"{when} — {foods or 'meal'} ({kcal})"
 
 
+def _stat(value, fmt: str = "{:.0f}") -> str:
+    """Format one experiment.cgm_meal_stats value for st.metric, turning a
+    missing one into an em dash. Every field there can legitimately be None —
+    no pre-meal readings to average, glucose that never returned to baseline —
+    and a literal "None" on screen reads like a bug rather than a finding."""
+    return "—" if pd.isna(value) else fmt.format(value)   # pd.isna(None) is True
+
+
 def _meal_card(row):
     """The bordered card at the top: photo on the left, foods + macros right."""
     with st.container(border=True):
@@ -91,7 +128,7 @@ def _meal_card(row):
         with img_col:
             img = data.load_meal_image_bytes(row["gcs_uri"])
             if img:
-                st.image(img, use_container_width=True)
+                st.image(img, width="stretch")
             else:
                 st.caption("No photo for this meal.")
         with macro_col:
@@ -107,32 +144,41 @@ def _meal_card(row):
             m4.metric("Fat (g)", f"{row['fat_g']:.0f}" if pd.notna(row["fat_g"]) else "—")
 
 
-def _load_meal_window(user_id: str, meal_ts, pre_meal_min: int, post_meal_hours: int):
-    """Single Meal view: window around the meal, user-adjustable via the
-    sliders below the meal picker — a tight pre-meal span anchors the chart
-    on the spike; widen it to see pre-meal context."""
+def _load_meal_window(user_id: str, meal_ts,
+                      pre_meal_min: int = SINGLE_MEAL_PRE_MIN,
+                      post_meal_hours: int = SINGLE_MEAL_POST_HOURS):
+    """Single Meal view: the one fixed window fetched around the meal. Fixed,
+    not user-adjustable — the chart's zoom buttons narrow the VIEW inside this
+    window without refetching, so the same cached frame serves every zoom."""
     start = meal_ts - pd.Timedelta(minutes=pre_meal_min)
     end = meal_ts + pd.Timedelta(hours=post_meal_hours)
+    protocol = pd.Timedelta(minutes=experiment.POST_MEAL_EXERCISE_MAX_MIN)
     return {
         "glucose": data.load_glucose_window(user_id, start, end),
-        # Activities always look 2h back (regardless of the glucose slider) so
-        # a pre-meal walk keeps its band on the chart and stays consistent
-        # with the ±2h Post-Meal Activity card above.
-        "activities": data.load_activities_window(user_id, meal_ts - pd.Timedelta(hours=2), end),
+        # Activity bands are bounded by the protocol window on BOTH sides, not
+        # by the glucose window: forward, because a workout hours later isn't
+        # this meal's exercise (see experiment.POST_MEAL_EXERCISE_MAX_MIN) and
+        # shouldn't be shaded as if it were; backward, so a pre-meal walk still
+        # shows as context. Same span as the Post-Meal Activity card above.
+        "activities": data.load_activities_window(user_id, meal_ts - protocol,
+                                                  meal_ts + protocol),
         # BP is sparse (a reading or two a day), so look much further ahead.
         "bp": data.load_bp_window(user_id, meal_ts, meal_ts + pd.Timedelta(hours=36)),
     }
 
 
 def _activity_section(user_id: str, meal_ts):
-    """Show the Garmin activity (if any) that started within +/- 2 hours of
-    the meal — e.g. a post-meal walk — with its own metrics row."""
+    """Show the Garmin activity (if any) that started within the protocol
+    window either side of the meal — e.g. a post-meal walk — with its own
+    metrics row. An activity AFTER the meal is what makes this an exercise
+    arm (see experiment.POST_MEAL_EXERCISE_MAX_MIN); one before is context."""
     with st.container(border=True):
         st.subheader("🏃 Post-Meal Activity")
-        paired = data.load_activities_window(user_id, meal_ts - pd.Timedelta(hours=2),
-                                             meal_ts + pd.Timedelta(hours=2))
+        protocol = pd.Timedelta(minutes=experiment.POST_MEAL_EXERCISE_MAX_MIN)
+        paired = data.load_activities_window(user_id, meal_ts - protocol, meal_ts + protocol)
         if paired.empty:
-            st.caption("No activity logged in the 2 hours before and after this meal.")
+            st.caption(f"No activity logged within {experiment.POST_MEAL_EXERCISE_MAX_MIN} "
+                       "minutes before or after this meal.")
             return
 
         a = paired.iloc[0]   # .iloc[0] = first row; earliest activity in the window
@@ -170,7 +216,71 @@ def _overnight_hrv_section(user_id: str, meal_ts):
         # two lines share one x-axis.
         glucose = data.load_glucose_window(user_id, hrv["ts"].min(), hrv["ts"].max())
         fig = charts.overnight_hrv_glucose_fig(hrv, glucose)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+
+@st.fragment
+def _paired_experiment(user_id: str, meal_a, meal_b, acts_a, acts_b):
+    """Paired Meal Experiment: the slider and everything it drives.
+
+    WHY THIS IS A FRAGMENT: `hours_after` genuinely changes the math (both
+    windows, both stat sets, the overlay), so it has to stay a real widget and
+    a real rerun. @st.fragment narrows the blast radius of that rerun to this
+    function — moving the slider redraws the chart and table, and leaves the
+    header, the auth gate, the meal pickers and the two meal cards alone.
+
+    Everything the fragment shows is created INSIDE it. A fragment may only
+    write into containers made outside it if they were written during the
+    initial full run; keeping every element self-created sidesteps that rule
+    entirely. The meal pickers deliberately stay outside — changing a meal
+    reruns the whole page, which is correct (the cards must change too) and
+    rare compared to dragging the slider.
+
+    acts_a/acts_b arrive as arguments rather than being loaded here: which
+    activities belong to a meal is fixed by the protocol window, so the slider
+    can't change them and re-deriving them on every drag would be waste.
+    """
+    hours_after = st.slider("Hours to track after each meal", 4, 20, DEFAULT_POST_MEAL_HOURS)
+
+    # Each meal's glucose window: 30 min before (to establish baseline)
+    # through `hours_after` after.
+    win_a = data.load_glucose_window(user_id,
+                                     meal_a["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
+                                     meal_a["capture_ts"] + pd.Timedelta(hours=hours_after))
+    win_b = data.load_glucose_window(user_id,
+                                     meal_b["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
+                                     meal_b["capture_ts"] + pd.Timedelta(hours=hours_after))
+
+    if win_a.empty or win_b.empty:
+        st.warning("One or both meals have no CGM readings in this window.")
+        # `return`, not st.stop(): inside a fragment st.stop() would halt the
+        # fragment anyway, but returning makes that intent explicit.
+        return
+
+    # The actual science: per-meal CGM statistics, computed in experiment.py.
+    stats_a = experiment.cgm_meal_stats(win_a, meal_a["capture_ts"], BASELINE_WINDOW_MIN, hours_after)
+    stats_b = experiment.cgm_meal_stats(win_b, meal_b["capture_ts"], BASELINE_WINDOW_MIN, hours_after)
+
+    # Same data re-indexed to "minutes since meal" for the overlay chart.
+    post_a = experiment.post_meal_window(win_a, meal_a["capture_ts"], hours_after)
+    post_b = experiment.post_meal_window(win_b, meal_b["capture_ts"], hours_after)
+
+    with st.container(border=True):
+        st.subheader("🩸 Glucose Overlay")
+        # Meal timestamps anchor each activity to minutes-since-ITS-meal.
+        fig = charts.paired_cgm_overlay_fig(post_a, post_b, "Meal A", "Meal B",
+                                            activities_a=acts_a, activities_b=acts_b,
+                                            meal_ts_a=meal_a["capture_ts"],
+                                            meal_ts_b=meal_b["capture_ts"])
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+    with st.container(border=True):
+        st.subheader("Statistics")
+        st.caption("HRV/vagal-tone statistics aren't shown — this pipeline's HRV "
+                   "capture window doesn't reliably cover the evening post-meal "
+                   "period yet (see module docstring).")
+        st.dataframe(experiment.compare_meal_stats(stats_a, stats_b, "Meal A", "Meal B"),
+                     width="stretch", hide_index=True)
 
 
 # ---- Page starts rendering here (top of the visible page) ------------------
@@ -230,26 +340,50 @@ if view == "Single Meal":
     _meal_card(meal)
     _activity_section(user_id, meal_ts)
 
-    # Chart-window knobs. Sliders return their current value on every rerun
-    # (args: label, min, max, default); cache_data means each setting is
-    # queried from BigQuery once, then served from cache.
-    pre_col, post_col = st.columns(2)
-    with pre_col:
-        pre_meal_min = st.slider("Minutes shown before meal", 10, 120, 10, step=10)
-    with post_col:
-        post_meal_hours = st.slider("Hours shown after meal", 2, 8, 4)
-
-    window = _load_meal_window(user_id, meal_ts, pre_meal_min, post_meal_hours)
+    # One fixed window, fetched once. There are no window sliders here anymore:
+    # they only changed what was DRAWN, and every one of them cost a rerun (and
+    # a BigQuery miss on first use) to redraw the same underlying readings. The
+    # chart's own zoom buttons do that job in the browser instead.
+    window = _load_meal_window(user_id, meal_ts)
 
     if window["glucose"].empty:
         st.warning("No CGM readings in this window — nothing to analyze for this meal.")
         st.stop()
 
+    # The statistics behind the curve (same math the Paired view tabulates),
+    # computed over the FULL fetched window — zooming the chart can't move
+    # them, which is the point: the numbers describe the meal, not the view.
+    stats = experiment.cgm_meal_stats(window["glucose"], meal_ts,
+                                      BASELINE_WINDOW_MIN, SINGLE_MEAL_POST_HOURS)
+    baseline = experiment.baseline_glucose(window["glucose"], meal_ts, BASELINE_WINDOW_MIN)
+
     with st.container(border=True):
         st.subheader("🩸 Glucose Response")
+        # baseline= draws the dotted pre-meal reference line, so the excursion
+        # is readable as a height above it rather than an absolute number.
         fig = charts.meal_timeline_fig(window["glucose"], window["activities"], window["bp"],
-                                       meal_ts, baseline=None)
-        st.plotly_chart(fig, use_container_width=True)
+                                       meal_ts, baseline=baseline)
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+        # border=True boxes each metric so the row reads as a set of readings.
+        # Every value can legitimately be None (no pre-meal readings, no peak,
+        # never came back down), hence the "—" fallback on each.
+        # Units live in the labels (matching the macro row on the meal card),
+        # so the values stay bare numbers and the row scans as one set.
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("Baseline (mg/dL)", _stat(stats["baseline_mg_dl"]), border=True,
+                  help=f"Mean glucose in the {BASELINE_WINDOW_MIN} minutes before the meal.")
+        s2.metric("Peak (mg/dL)", _stat(stats["peak_mg_dl"]), border=True,
+                  help="Highest reading after the meal.")
+        s3.metric("Time to peak (min)", _stat(stats["time_to_peak_min"]), border=True,
+                  help="Minutes from the meal to that peak.")
+        s4.metric("Return to baseline (min)", _stat(stats["time_to_baseline_min"]), border=True,
+                  help="Minutes until glucose fell back to baseline. “—” means it "
+                       f"hadn't within {SINGLE_MEAL_POST_HOURS} hours of the meal.")
+        s5.metric("Incremental AUC (mg/dL·min)", _stat(stats["auc_mg_dl_min"], "{:,.0f}"),
+                  border=True,
+                  help="Area between the curve and baseline — the single best summary "
+                       "of how much this meal moved glucose overall.")
 
         if window["bp"].empty:
             st.caption("No blood-pressure reading in the following ~36 hours.")
@@ -259,16 +393,45 @@ if view == "Single Meal":
 else:  # Paired Meal Experiment
     st.caption(
         "Pick any two meals to compare — e.g. the same dinner with and without "
-        "a post-meal walk. Overlay is on 'minutes since meal' so the two "
-        "excursions line up regardless of when each meal happened."
+        "a post-meal walk. **Meal B is the exercise arm**, Meal A the control. "
+        "Overlay is on 'minutes since meal' so the two excursions line up "
+        "regardless of when each meal happened."
     )
+
+    # One activities query covering every meal in the picker, so labelling all
+    # of them as exercise/control costs a single (cached) round trip instead of
+    # one per meal. The bounds are padded by the protocol window on each side.
+    pad = pd.Timedelta(minutes=experiment.POST_MEAL_EXERCISE_MAX_MIN)
+    all_acts = data.load_activities_window(user_id,
+                                           meals["capture_ts"].min() - pad,
+                                           meals["capture_ts"].max() + pad)
+    # Which meals are exercise arms — an activity started within the protocol
+    # window after eating (experiment.POST_MEAL_EXERCISE_MAX_MIN minutes).
+    is_arm = {row["_label"]: experiment.has_post_meal_exercise(all_acts, row["capture_ts"])
+              for _, row in meals.iterrows()}
+
+    def _arm_label(label: str) -> str:
+        """Dropdown text, flagged so the exercise arms are pickable at a glance
+        rather than by remembering which night had the walk."""
+        return f"🏃 {label}" if is_arm[label] else label
+
+    # Defaults now follow the protocol instead of "the two newest meals":
+    # B = the most recent exercise arm, A = the most recent control. next()
+    # walks the labels newest-first and takes the first match; the default
+    # argument covers "no meal qualifies", where we fall back to the old
+    # newest/second-newest behaviour rather than showing nothing.
+    labels = list(meals["_label"])
+    default_b = next((i for i, lbl in enumerate(labels) if is_arm[lbl]), 0)
+    default_a = next((i for i, lbl in enumerate(labels)
+                      if not is_arm[lbl] and i != default_b), min(1, len(labels) - 1))
+
     col_a, col_b = st.columns(2)
     with col_a:
-        # Default A to the second-newest meal (index 1) so A and B start
-        # different; min() guards the case of having only one meal.
-        label_a = st.selectbox("Meal A", meals["_label"], index=min(1, len(meals) - 1))
+        label_a = st.selectbox("Meal A — control", labels, index=default_a,
+                               format_func=_arm_label)
     with col_b:
-        label_b = st.selectbox("Meal B", meals["_label"], index=0)
+        label_b = st.selectbox("Meal B — exercise arm", labels, index=default_b,
+                               format_func=_arm_label)
 
     meal_a = meals[meals["_label"] == label_a].iloc[0]
     meal_b = meals[meals["_label"] == label_b].iloc[0]
@@ -277,59 +440,41 @@ else:  # Paired Meal Experiment
         st.info("Pick two different meals to compare.")
         st.stop()
 
-    hours_after = st.slider("Hours to track after each meal", 4, 20, DEFAULT_POST_MEAL_HOURS)
+    # The pickers stay free — you may want to compare two controls — but say so
+    # when the pair doesn't match the protocol, rather than silently reporting a
+    # "with vs without exercise" delta that isn't one.
+    if not is_arm[label_b]:
+        st.warning(f"Meal B has no activity logged within "
+                   f"{experiment.POST_MEAL_EXERCISE_MAX_MIN} minutes of the meal, so this "
+                   "isn't an exercise-vs-control pair. Meals marked 🏃 are the exercise arms.")
+    if is_arm[label_a]:
+        st.warning("Meal A is also an exercise arm, so the Δ below compares two "
+                   "exercised meals rather than exercise against control.")
 
+    # What each meal's overlay shades. after_min caps at the protocol window —
+    # a walk hours later isn't this meal's intervention and shouldn't be drawn
+    # as though it were. before_min keeps pre-meal activity visible as context
+    # (it lands at negative minutes on the overlay, which is the point).
+    acts_a = experiment.activities_around_meal(
+        all_acts, meal_a["capture_ts"],
+        before_min=experiment.POST_MEAL_EXERCISE_MAX_MIN,
+        after_min=experiment.POST_MEAL_EXERCISE_MAX_MIN)
+    acts_b = experiment.activities_around_meal(
+        all_acts, meal_b["capture_ts"],
+        before_min=experiment.POST_MEAL_EXERCISE_MAX_MIN,
+        after_min=experiment.POST_MEAL_EXERCISE_MAX_MIN)
+
+    # The cards sit OUTSIDE the fragment: they describe the meals themselves,
+    # so nothing the slider does can change them — no reason to redraw them
+    # (and refetch two meal photos) every time it moves.
     card_a, card_b = st.columns(2)
     with card_a:
         _meal_card(meal_a)
     with card_b:
         _meal_card(meal_b)
 
-    # Each meal's glucose window: 30 min before (to establish baseline)
-    # through `hours_after` after.
-    win_a = data.load_glucose_window(user_id,
-                                     meal_a["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
-                                     meal_a["capture_ts"] + pd.Timedelta(hours=hours_after))
-    win_b = data.load_glucose_window(user_id,
-                                     meal_b["capture_ts"] - pd.Timedelta(minutes=BASELINE_WINDOW_MIN),
-                                     meal_b["capture_ts"] + pd.Timedelta(hours=hours_after))
-
-    if win_a.empty or win_b.empty:
-        st.warning("One or both meals have no CGM readings in this window.")
-        st.stop()
-
-    # The actual science: per-meal CGM statistics, computed in experiment.py.
-    stats_a = experiment.cgm_meal_stats(win_a, meal_a["capture_ts"], BASELINE_WINDOW_MIN, hours_after)
-    stats_b = experiment.cgm_meal_stats(win_b, meal_b["capture_ts"], BASELINE_WINDOW_MIN, hours_after)
-
-    # Same data re-indexed to "minutes since meal" for the overlay chart.
-    post_a = experiment.post_meal_window(win_a, meal_a["capture_ts"], hours_after)
-    post_b = experiment.post_meal_window(win_b, meal_b["capture_ts"], hours_after)
-
-    # Each meal's Garmin activities, so the overlay can shade WHEN exercise
-    # happened relative to each meal. The 2-hour lookback matches the Single
-    # Meal view's convention: a pre-meal walk still counts as context.
-    acts_a = data.load_activities_window(user_id, meal_a["capture_ts"] - pd.Timedelta(hours=2),
-                                         meal_a["capture_ts"] + pd.Timedelta(hours=hours_after))
-    acts_b = data.load_activities_window(user_id, meal_b["capture_ts"] - pd.Timedelta(hours=2),
-                                         meal_b["capture_ts"] + pd.Timedelta(hours=hours_after))
-
-    with st.container(border=True):
-        st.subheader("🩸 Glucose Overlay")
-        # Meal timestamps anchor each activity to minutes-since-ITS-meal.
-        fig = charts.paired_cgm_overlay_fig(post_a, post_b, "Meal A", "Meal B",
-                                            activities_a=acts_a, activities_b=acts_b,
-                                            meal_ts_a=meal_a["capture_ts"],
-                                            meal_ts_b=meal_b["capture_ts"])
-        st.plotly_chart(fig, use_container_width=True)
-
-    with st.container(border=True):
-        st.subheader("Statistics")
-        st.caption("HRV/vagal-tone statistics aren't shown — this pipeline's HRV "
-                   "capture window doesn't reliably cover the evening post-meal "
-                   "period yet (see module docstring).")
-        st.dataframe(experiment.compare_meal_stats(stats_a, stats_b, "Meal A", "Meal B"),
-                    use_container_width=True, hide_index=True)
+    # Slider + everything downstream of it, isolated in its own rerun scope.
+    _paired_experiment(user_id, meal_a, meal_b, acts_a, acts_b)
 
 st.divider()
 st.caption(

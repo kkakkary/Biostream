@@ -62,8 +62,101 @@ def test_meal_timeline_fig_marks_exercise_and_bp():
     fig = charts.meal_timeline_fig(glucose, activities, bp, meal_ts, baseline=95.0)
 
     # 1 line trace (CGM) + exercise shading is a shape, not a trace.
+    # (The zoom buttons and range slider are layout, so they add no traces.)
     assert len(fig.data) == 1
     assert any(s.fillcolor == charts.EXERCISE_BAND for s in fig.layout.shapes)
+
+
+def _flat_meal_window(meal_ts, pre_hours=2, post_hours=8):
+    """A featureless CGM window around a meal — enough to build the figure
+    when the test only cares about layout, not about the data's shape."""
+    times = pd.date_range(meal_ts - pd.Timedelta(hours=pre_hours),
+                          meal_ts + pd.Timedelta(hours=post_hours), freq="15min")
+    glucose = pd.DataFrame({"ts": times, "glucose_mg_dl": [100.0] * len(times)})
+    # Empty activity/BP frames: .iterrows() over them is a no-op, so the figure
+    # comes back with the CGM trace and nothing overlaid.
+    return (glucose,
+            pd.DataFrame(columns=["activity_type", "start_ts", "end_ts"]),
+            pd.DataFrame(columns=["measurement_ts_utc", "systolic", "diastolic"]))
+
+
+def test_meal_timeline_fig_draws_baseline_line_when_given_one():
+    # Regression guard: app.py used to pass baseline=None, so this line — the
+    # reference the whole excursion is measured against — never drew.
+    meal_ts = pd.Timestamp("2026-07-18 19:00")
+    glucose, acts, bp = _flat_meal_window(meal_ts)
+
+    with_baseline = charts.meal_timeline_fig(glucose, acts, bp, meal_ts, baseline=95.0)
+    without = charts.meal_timeline_fig(glucose, acts, bp, meal_ts, baseline=None)
+
+    # add_hline makes a horizontal line shape: same y at both ends, dotted.
+    def _baselines(fig):
+        return [s for s in fig.layout.shapes
+                if s.type == "line" and s.y0 == s.y1 == 95.0 and s.line.dash == "dot"]
+
+    assert len(_baselines(with_baseline)) == 1
+    assert _baselines(without) == []   # None means "no baseline to draw"
+
+
+def test_meal_timeline_fig_zoom_buttons_anchor_ranges_on_the_meal():
+    # The point of these buttons: "2h" must mean the two hours after EATING.
+    # Plotly's built-in rangeselector can't express that (it steps back from
+    # the right edge of the view), which is why they're updatemenus carrying
+    # an explicit range — so the range is what's worth asserting on.
+    meal_ts = pd.Timestamp("2026-07-18 19:00")
+    glucose, acts, bp = _flat_meal_window(meal_ts)
+
+    fig = charts.meal_timeline_fig(glucose, acts, bp, meal_ts, baseline=None)
+
+    buttons = fig.layout.updatemenus[0].buttons
+    assert [b.label for b in buttons] == ["1h", "2h", "4h", "All"]
+
+    # Every preset starts at the same pre-meal instant and ends N hours after
+    # the meal — nothing here depends on where the fetched data happens to end.
+    start = (meal_ts - pd.Timedelta(minutes=charts.DEFAULT_VIEW_PRE_MIN)).isoformat()
+    for button, hours in zip(buttons, charts.ZOOM_PRESET_HOURS):
+        assert button.method == "relayout"   # layout-only = no server round trip
+        assert button.args[0]["xaxis.range"] == [
+            start, (meal_ts + pd.Timedelta(hours=hours)).isoformat()]
+
+    # "All" hands the axis back to autoscale rather than naming a range.
+    assert buttons[-1].args[0] == {"xaxis.autorange": True}
+
+
+def test_meal_timeline_fig_opens_zoomed_in_with_a_range_slider():
+    meal_ts = pd.Timestamp("2026-07-18 19:00")
+    glucose, acts, bp = _flat_meal_window(meal_ts)   # data spans -2h .. +8h
+
+    fig = charts.meal_timeline_fig(glucose, acts, bp, meal_ts, baseline=None)
+
+    # The visible range opens narrower than the fetched data: the rest is
+    # already in the browser, one button (or one slider drag) away.
+    assert list(fig.layout.xaxis.range) == [
+        (meal_ts - pd.Timedelta(minutes=charts.DEFAULT_VIEW_PRE_MIN)).isoformat(),
+        (meal_ts + pd.Timedelta(hours=charts.DEFAULT_VIEW_POST_HOURS)).isoformat()]
+    # ...and the highlighted button agrees with that opening view.
+    menu = fig.layout.updatemenus[0]
+    assert menu.buttons[menu.active].label == f"{charts.DEFAULT_VIEW_POST_HOURS}h"
+    assert fig.layout.xaxis.rangeslider.visible is True
+
+
+def test_layout_turns_on_spikelines_for_every_chart():
+    # Spikelines come from the shared _layout() helper, so they should be on
+    # whether the chart is meal-anchored, daily, or dual-axis.
+    meal_ts = pd.Timestamp("2026-07-18 19:00")
+    glucose, acts, bp = _flat_meal_window(meal_ts)
+    daily = pd.DataFrame({"date": pd.to_datetime(["2026-07-18", "2026-07-19"]),
+                          "total_steps": [8000.0, 9000.0]})
+
+    for fig in [charts.meal_timeline_fig(glucose, acts, bp, meal_ts, baseline=None),
+                charts.steps_fig(daily),
+                charts.glucose_fig(glucose)]:
+        assert fig.layout.xaxis.showspikes is True
+        assert fig.layout.xaxis.spikemode == "across"   # full-height, not a stub
+        assert fig.layout.xaxis.spikedash == "dot"
+        assert fig.layout.xaxis.spikecolor == charts.MUTED
+        # -1 = follow the cursor anywhere, not just near a data point.
+        assert fig.layout.spikedistance == -1
 
 
 def test_paired_cgm_overlay_fig_uses_minutes_since_meal_axis():
