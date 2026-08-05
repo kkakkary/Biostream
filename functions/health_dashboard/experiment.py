@@ -1,7 +1,9 @@
 """Meal-anchored post-prandial analysis — pure functions, unit-testable.
 
-Every function here takes a glucose time series plus a meal timestamp and
-answers one question about the excursion that follows. Times are always
+Most functions here take a glucose time series plus a meal timestamp and
+answer one question about the excursion that follows. The exceptions are the
+two activity helpers at the top, which encode the experiment's protocol rule:
+which Garmin activity counts as a given meal's post-meal exercise. Times are always
 minutes elapsed since the meal (matching how a clinician reads a CGM trace),
 never minutes since the peak — so time_to_peak and time_to_baseline are
 directly comparable and summable.
@@ -23,6 +25,37 @@ import pandas as pd
 
 DEFAULT_BASELINE_WINDOW_MIN = 30
 DEFAULT_POST_MEAL_HOURS = 15  # meal through ~next-morning
+
+# THE EXPERIMENT PROTOCOL: an activity only counts as a meal's "post-meal
+# exercise" if it started within this many minutes of eating. A walk three
+# hours later is a different event in the day, not this meal's intervention —
+# by then the excursion it was supposed to blunt is already over.
+POST_MEAL_EXERCISE_MAX_MIN = 120
+
+
+def activities_around_meal(activities: pd.DataFrame, meal_ts,
+                           before_min: int = 0,
+                           after_min: int = POST_MEAL_EXERCISE_MAX_MIN) -> pd.DataFrame:
+    """Activities whose START falls in [meal - before_min, meal + after_min].
+
+    Judged on start_ts, not overlap: an activity that began in the window is
+    this meal's, and one that began outside it isn't, however long it ran.
+    before_min defaults to 0 — the protocol window is post-meal only; callers
+    that want pre-meal context on a chart pass a positive before_min.
+    """
+    if activities.empty:
+        return activities
+    start = meal_ts - pd.Timedelta(minutes=before_min)
+    end = meal_ts + pd.Timedelta(minutes=after_min)
+    return activities[(activities["start_ts"] >= start) &
+                      (activities["start_ts"] <= end)]
+
+
+def has_post_meal_exercise(activities: pd.DataFrame, meal_ts,
+                           max_min: int = POST_MEAL_EXERCISE_MAX_MIN) -> bool:
+    """Is this meal an exercise arm? True when at least one activity started
+    between the meal and `max_min` minutes after it."""
+    return not activities_around_meal(activities, meal_ts, 0, max_min).empty
 
 
 def baseline_glucose(glucose: pd.DataFrame, meal_ts,

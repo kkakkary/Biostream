@@ -61,6 +61,17 @@ def _layout(fig: go.Figure, height: int = 320, top: int = 8) -> go.Figure:
                      tickfont=dict(color=MUTED), zeroline=False)
     fig.update_yaxes(gridcolor=GRID, gridwidth=1, linecolor=SURFACE,
                      tickfont=dict(color=MUTED), zeroline=False)
+    # Spikeline: hovering drops a thin dotted vertical line onto the time axis.
+    # This is the chart's core reading gesture — line a glucose peak up against
+    # an exercise band without eyeballing across empty space.
+    #   spikemode="across" — draw the line across the whole plot area, not just
+    #                        the stub between the point and the axis.
+    #   spikedistance=-1   — no proximity cutoff: the spike follows the cursor
+    #                        anywhere on the chart, not only near a data point.
+    # Applied here in the shared helper, so every chart on the page gets it.
+    fig.update_xaxes(showspikes=True, spikemode="across", spikethickness=1,
+                     spikedash="dot", spikecolor=MUTED)
+    fig.update_layout(spikedistance=-1)
     return fig
 
 
@@ -146,6 +157,44 @@ def steps_fig(daily: pd.DataFrame) -> go.Figure:
 
 EXERCISE_BAND = "rgba(235, 104, 52, 0.12)"  # translucent orange wash
 
+# --- Single Meal zoom controls ----------------------------------------------
+# app.py fetches one generous window per meal (2 h before -> 8 h after) and the
+# reader zooms inside it here, in the browser. Nothing below changes the data,
+# only which slice of the x-axis is visible — so a zoom is a Plotly relayout:
+# no Streamlit rerun, no BigQuery query, no spinner.
+ZOOM_PRESET_HOURS = [1, 2, 4]   # "1h" = the first hour after the meal, etc.
+DEFAULT_VIEW_PRE_MIN = 10       # how much pre-meal context the first render shows
+DEFAULT_VIEW_POST_HOURS = 4     # ...and how far past the meal it reaches
+
+
+def _meal_zoom_buttons(meal_ts) -> list[dict]:
+    """Build the zoom preset buttons, each carrying an explicit x-range
+    anchored on the MEAL — "2h" means the two hours after eating.
+
+    Why not Plotly's built-in `rangeselector`: its buttons step backward from
+    the RIGHT EDGE of the current view, so its "2h" means "the last two hours
+    of whatever is on screen" — it has no way to anchor on a point inside the
+    data. `updatemenus` buttons carry a literal range, which is exactly the
+    meal-anchored behaviour this chart needs.
+
+    method="relayout" = change layout only (here, the axis range); the traces
+    are untouched, which is why the browser can do this without a round trip.
+    """
+    meal_ts = pd.Timestamp(meal_ts)
+    start = meal_ts - pd.Timedelta(minutes=DEFAULT_VIEW_PRE_MIN)
+    # .isoformat() matches how Plotly encodes the datetime x-values themselves
+    # (same tz offset, or none for naive timestamps), so the two line up.
+    buttons = [
+        dict(label=f"{h}h", method="relayout",
+             args=[{"xaxis.range": [start.isoformat(),
+                                    (meal_ts + pd.Timedelta(hours=h)).isoformat()]}])
+        for h in ZOOM_PRESET_HOURS
+    ]
+    # "All" hands the axis back to Plotly's autoscale — i.e. the entire window
+    # app.py fetched, however wide that happens to be.
+    buttons.append(dict(label="All", method="relayout", args=[{"xaxis.autorange": True}]))
+    return buttons
+
 
 def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
                       bp: pd.DataFrame, meal_ts, baseline: float | None) -> go.Figure:
@@ -167,8 +216,13 @@ def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
                              hovertemplate="%{y:.0f} mg/dL<extra></extra>"))
 
     # vline = vertical marker at one instant (the meal).
+    # yshift pulls the label down INSIDE the plot area: a vline's annotation
+    # normally floats just above it, which is exactly where the zoom buttons
+    # sit — and in the default view the meal is near the left edge, right under
+    # them. This also lines "Meal" up with the exercise band labels.
     fig.add_vline(x=meal_ts, line=dict(color=INK_2, width=2, dash="dash"),
                  annotation_text="Meal", annotation_position="top",
+                 annotation_yshift=-14,
                  annotation_font=dict(color=INK_2, size=11))
 
     # vrect = shaded span (start -> end of each workout).
@@ -176,7 +230,9 @@ def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
     for _, a in activities.iterrows():
         end = a["end_ts"] if pd.notna(a["end_ts"]) else a["start_ts"]
         fig.add_vrect(x0=a["start_ts"], x1=end, fillcolor=EXERCISE_BAND, line_width=0,
-                     annotation_text=a["activity_type"] or "Exercise",
+                     # pd.notna, not `or`: a missing type is NaN/NA, not falsy.
+                     annotation_text=(a["activity_type"]
+                                      if pd.notna(a["activity_type"]) else "Exercise"),
                      annotation_position="top left",
                      annotation_font=dict(color=ORANGE, size=10))
 
@@ -186,27 +242,115 @@ def meal_timeline_fig(glucose: pd.DataFrame, activities: pd.DataFrame,
                      annotation_position="bottom right",
                      annotation_font=dict(color=GREEN, size=10))
 
-    fig = _layout(fig, height=420)
+    # Taller than the other charts (and a roomier top margin) to pay for the
+    # two extra strips this one carries: the zoom buttons above the plot and
+    # the range slider below it.
+    fig = _layout(fig, height=470, top=46)
     fig.update_yaxes(title_text="mg/dL", title_font=dict(color=MUTED))
+
+    # Open on the same span the old "minutes before / hours after" sliders
+    # defaulted to. The data underneath extends further; this is just the
+    # starting view, and every zoom control below moves it client-side.
+    meal_ts = pd.Timestamp(meal_ts)
+    fig.update_xaxes(
+        range=[(meal_ts - pd.Timedelta(minutes=DEFAULT_VIEW_PRE_MIN)).isoformat(),
+               (meal_ts + pd.Timedelta(hours=DEFAULT_VIEW_POST_HOURS)).isoformat()],
+        # The strip under the chart: a mini overview of the WHOLE fetched
+        # window with the visible span as a draggable handle. thickness is a
+        # fraction of plot height, so 0.08 keeps it slim.
+        rangeslider=dict(visible=True, thickness=0.08, bgcolor=SURFACE,
+                         bordercolor=AXIS, borderwidth=1),
+    )
+    fig.update_layout(updatemenus=[dict(
+        type="buttons", direction="right", buttons=_meal_zoom_buttons(meal_ts),
+        # x/y are in paper coordinates: pinned to the left edge, sitting just
+        # above the plot area (y=1 anchored by its bottom).
+        x=0, xanchor="left", y=1, yanchor="bottom", pad=dict(b=6),
+        bgcolor=SURFACE, bordercolor=AXIS, borderwidth=1,
+        font=dict(family=FONT, color=INK_2, size=11),
+        # The opening range above is the "4h" preset, so highlight that button
+        # (index 2) to start — otherwise the controls disagree with the view.
+        showactive=True, active=ZOOM_PRESET_HOURS.index(DEFAULT_VIEW_POST_HOURS),
+    )])
     return fig
 
 
+# Per-meal exercise washes for the paired overlay: same 12% alpha as
+# EXERCISE_BAND, but tinted with each curve's hue so a band is visually
+# tied to the meal it belongs to (blue wash = Meal A, orange wash = Meal B).
+EXERCISE_BAND_BLUE = "rgba(42, 120, 214, 0.12)"    # translucent BLUE
+EXERCISE_BAND_ORANGE = "rgba(235, 104, 52, 0.12)"  # translucent ORANGE
+
+
 def paired_cgm_overlay_fig(window_a: pd.DataFrame, window_b: pd.DataFrame,
-                           label_a: str, label_b: str) -> go.Figure:
+                           label_a: str, label_b: str,
+                           activities_a: pd.DataFrame | None = None,
+                           activities_b: pd.DataFrame | None = None,
+                           meal_ts_a=None, meal_ts_b=None) -> go.Figure:
     """Paired Meal Experiment overlay: both meals' CGM excursions on a shared
     'minutes since meal' axis so the two curves are directly comparable.
-    (Each window's first reading is its meal time — see post_meal_window —
-    so subtracting it converts wall-clock time to minutes-since-meal.)"""
+    (Minute 0 is the true meal timestamp when meal_ts_a/b are passed; older
+    callers that omit them fall back to each window's first reading, which
+    post_meal_window guarantees is at/just after the meal.)
+
+    Optionally also marks WHEN things happened: a dashed line at minute 0
+    (the meal itself — shared by both curves, since 0 is each meal by
+    construction) and a shaded band per Garmin activity, tinted with its
+    meal's curve color. The activity args default to None so older callers
+    (and tests) that pass only the two windows keep working unchanged.
+    """
     fig = go.Figure()
     lo, hi = GLUCOSE_RANGE_MG_DL
     fig.add_hrect(y0=lo, y1=hi, fillcolor=BAND, line_width=0, layer="below")
-    for window, label, color in [(window_a, label_a, BLUE), (window_b, label_b, ORANGE)]:
-        if window.empty:
-            continue
-        minutes = (window["ts"] - window["ts"].iloc[0]).dt.total_seconds() / 60
-        fig.add_trace(go.Scatter(x=minutes, y=window["glucose_mg_dl"], mode="lines",
-                                 name=label, line=dict(color=color, width=2),
-                                 hovertemplate="%{y:.0f} mg/dL<extra>" + label + "</extra>"))
+
+    # One pass per meal: draw its CGM curve, then its exercise bands.
+    # The tuple also carries a short tag ("A"/"B") for band labels, the wash
+    # color matching the curve, and where to pin the band annotation —
+    # A's labels sit at the top, B's at the bottom, so they never collide.
+    for window, label, color, activities, meal_ts, tag, wash, ann_pos in [
+        (window_a, label_a, BLUE, activities_a, meal_ts_a, "A",
+         EXERCISE_BAND_BLUE, "top left"),
+        (window_b, label_b, ORANGE, activities_b, meal_ts_b, "B",
+         EXERCISE_BAND_ORANGE, "bottom left"),
+    ]:
+        # Anchor: the instant that counts as minute 0 for this meal — shared
+        # by the curve AND its activity bands, so the two can never drift
+        # apart. Prefer the true meal timestamp; fall back to the window's
+        # first reading (which post_meal_window guarantees is at/just after
+        # the meal — "just after" is why the fallback alone isn't enough: a
+        # sensor gap at mealtime would shift curve and bands out of sync).
+        anchor = meal_ts if meal_ts is not None else (
+            window["ts"].iloc[0] if not window.empty else None)
+
+        if not window.empty:
+            minutes = (window["ts"] - anchor).dt.total_seconds() / 60
+            fig.add_trace(go.Scatter(x=minutes, y=window["glucose_mg_dl"], mode="lines",
+                                     name=label, line=dict(color=color, width=2),
+                                     hovertemplate="%{y:.0f} mg/dL<extra>" + label + "</extra>"))
+        if activities is None or anchor is None:
+            continue    # no activities passed, or nothing to anchor them to
+        for _, a in activities.iterrows():
+            # Some activities lack an end_ts; treat them as instantaneous.
+            end_ts = a["end_ts"] if pd.notna(a["end_ts"]) else a["start_ts"]
+            # Wall-clock -> minutes since THIS meal. Pre-meal activities land
+            # at negative minutes on purpose (a pre-meal walk should show).
+            x0 = (a["start_ts"] - anchor).total_seconds() / 60
+            x1 = (end_ts - anchor).total_seconds() / 60
+            # pd.notna, not `or`: a missing activity_type arrives as NaN/NA
+            # (truthy or even un-boolable in pandas), which `or` mishandles.
+            kind = a["activity_type"] if pd.notna(a["activity_type"]) else "Exercise"
+            fig.add_vrect(x0=x0, x1=x1, fillcolor=wash, line_width=0,
+                          # e.g. "walking (A)" — activity type + which meal,
+                          # colored to match that meal's curve.
+                          annotation_text=f"{kind} ({tag})",
+                          annotation_position=ann_pos,
+                          annotation_font=dict(color=color, size=10))
+
+    # Minute 0 IS the meal for both curves, so one shared dashed marker.
+    fig.add_vline(x=0, line=dict(color=INK_2, width=2, dash="dash"),
+                  annotation_text="Meal", annotation_position="top",
+                  annotation_font=dict(color=INK_2, size=11))
+
     fig = _layout(fig, height=380)
     fig.update_layout(showlegend=True)
     fig.update_xaxes(title_text="minutes since meal", title_font=dict(color=MUTED))
