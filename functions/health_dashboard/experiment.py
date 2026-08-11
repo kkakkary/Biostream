@@ -20,6 +20,8 @@ vocabulary:
               derivatives of the curve on its way up to the peak)
 """
 
+from typing import NamedTuple
+
 import numpy as np
 import pandas as pd
 
@@ -200,16 +202,134 @@ STAT_LABELS = {
 }
 
 
+class WindowStat(NamedTuple):
+    """A stat whose table cell shows more than a bare number — a value plus
+    the clock-time window it occurred in (see the 5-min rolling HRV windows
+    in hrv_sleep_stats). compare_meal_stats shows `display` in the Meal A/B
+    columns but computes the Δ column from `value` alone, per the "delta
+    should only show the delta of the max/min window values, not the delta
+    between clock times" requirement."""
+    display: str
+    value: float | None
+
+
+ROLLING_HRV_WINDOW = "5min"
+
+
+def _fmt_clock_range(end_ts, window: pd.Timedelta) -> str:
+    """'1:03 - 1:08 am' / '11:55 pm - 12:00 am' — a clock-time range ending
+    at end_ts. AM/PM is shown once, on the end, when both sides share the
+    same period; shown on both sides only when the window crosses noon/
+    midnight. (No %-I here: Windows' C runtime doesn't support strftime's
+    '-' no-pad flag — see app.py's _fmt_time_12h for the same workaround.)
+    """
+    start_ts = end_ts - window
+
+    def parts(ts):
+        return f"{int(ts.strftime('%I'))}:{ts.strftime('%M')}", ts.strftime("%p").lower()
+
+    start_clock, start_period = parts(start_ts)
+    end_clock, end_period = parts(end_ts)
+    if start_period == end_period:
+        return f"{start_clock} - {end_clock} {end_period}"
+    return f"{start_clock} {start_period} - {end_clock} {end_period}"
+
+
+def _rolling_hrv_window_extremes(hrv: pd.DataFrame) -> tuple[WindowStat | None, WindowStat | None]:
+    """The highest- and lowest-average trailing ROLLING_HRV_WINDOW (5 min) of
+    HRV in the night, as (highest, lowest) WindowStats — or (None, None) when
+    there's no data. Time-based rolling (not a fixed reading count), so it's
+    correct regardless of gaps or Garmin's sampling rate not being exactly
+    uniform; each window ends AT a reading's timestamp, e.g. the window
+    labelled "1:03 - 1:08" is the 5 minutes up to and including the 1:08
+    reading, matching how .rolling() on a time index works.
+    """
+    s = (hrv.dropna(subset=["ts", "hrv_value"])
+            .sort_values("ts")
+            .set_index("ts")["hrv_value"])
+    if s.empty:
+        return None, None
+    rolled = s.rolling(ROLLING_HRV_WINDOW, min_periods=1).mean()
+    window = pd.Timedelta(ROLLING_HRV_WINDOW)
+    hi_end, lo_end = rolled.idxmax(), rolled.idxmin()
+    hi_val = round(float(rolled.loc[hi_end]), 1)
+    lo_val = round(float(rolled.loc[lo_end]), 1)
+    hi = WindowStat(f"{hi_val:.1f} ms {_fmt_clock_range(hi_end, window)}", hi_val)
+    lo = WindowStat(f"{lo_val:.1f} ms {_fmt_clock_range(lo_end, window)}", lo_val)
+    return hi, lo
+
+
+def hrv_sleep_stats(hrv: pd.DataFrame) -> dict:
+    """Duration/average/min/max/time-to-peak/rolling-extreme HRV across one
+    night's readings, for the Paired Meal Experiment's Sleep HRV Statistics
+    table. dropna() is the "barring gaps/na values" guard — a missing
+    reading can't be anyone's min/max/duration/peak.
+
+    Duration is the span between the first and last HRV reading — the same
+    two points charts.py marks as "Sleep"/"Wake" on the overlay chart — not
+    Garmin's own sleep_seconds total, which this pipeline's HRV coverage
+    doesn't reliably span end-to-end (see module docstring in app.py).
+    """
+    values = hrv["hrv_value"].dropna() if not hrv.empty else pd.Series(dtype=float)
+    ts = hrv["ts"].dropna() if not hrv.empty else pd.Series(dtype="datetime64[ns]")
+    duration_hrs = (round((ts.max() - ts.min()).total_seconds() / 3600, 1)
+                    if len(ts) >= 2 else None)
+    if values.empty:
+        return {"duration_hrs": duration_hrs, "avg_hrv_ms": None,
+                "min_hrv_ms": None, "max_hrv_ms": None, "time_to_peak_hrv_min": None,
+                "max5_hrv": None, "min5_hrv": None}
+    # idxmax() on `values` (not `hrv`) so a dropped NaN row can't be picked;
+    # its label still indexes correctly into hrv["ts"] since dropna() keeps
+    # original row labels, only removing rows, not renumbering them.
+    peak_idx = values.idxmax()
+    time_to_peak_hrv_min = round((hrv["ts"].loc[peak_idx] - ts.iloc[0]).total_seconds() / 60, 1)
+    max5, min5 = _rolling_hrv_window_extremes(hrv)
+    return {
+        "duration_hrs": duration_hrs,
+        "avg_hrv_ms": round(float(values.mean()), 1),
+        "min_hrv_ms": round(float(values.min()), 1),
+        "max_hrv_ms": round(float(values.max()), 1),
+        "time_to_peak_hrv_min": time_to_peak_hrv_min,
+        "max5_hrv": max5,
+        "min5_hrv": min5,
+    }
+
+
+# Same idea as STAT_LABELS, for hrv_sleep_stats' keys.
+HRV_STAT_LABELS = {
+    "duration_hrs": "Sleep Duration (hrs)",
+    "avg_hrv_ms": "Average HRV (ms)",
+    "min_hrv_ms": "Min HRV (ms)",
+    "max_hrv_ms": "Max HRV (ms)",
+    "time_to_peak_hrv_min": "Time to Peak HRV (min)",
+    "max5_hrv": "Highest 5-min. HRV",
+    "min5_hrv": "Lowest 5-min. HRV",
+}
+
+
 def compare_meal_stats(stats_a: dict, stats_b: dict,
-                       label_a: str = "Meal A", label_b: str = "Meal B") -> pd.DataFrame:
+                       label_a: str = "Meal A", label_b: str = "Meal B",
+                       stat_labels: dict = STAT_LABELS) -> pd.DataFrame:
     """Tidy side-by-side comparison table for the Paired Meal Experiment view.
+    stat_labels selects which stat dict this table is for (STAT_LABELS for
+    cgm_meal_stats, HRV_STAT_LABELS for hrv_sleep_stats) — same shape either
+    way, so one function builds both tables.
 
     Delta is B - A wherever both sides have a value, so a reader can see at a
-    glance which direction (e.g. exercise) moved each statistic.
+    glance which direction (e.g. exercise) moved each statistic. A WindowStat
+    value (see hrv_sleep_stats) shows its `display` string in the Meal A/B
+    columns but still computes Δ from its bare `value`, not the display text.
     """
+    def cell(stat):
+        return stat.display if isinstance(stat, WindowStat) else stat
+
+    def numeric(stat):
+        return stat.value if isinstance(stat, WindowStat) else stat
+
     rows = []
-    for key, label in STAT_LABELS.items():
-        a, b = stats_a.get(key), stats_b.get(key)
+    for key, label in stat_labels.items():
+        a, b = numeric(stats_a.get(key)), numeric(stats_b.get(key))
         delta = round(b - a, 2) if a is not None and b is not None else None
-        rows.append({"Statistic": label, label_a: a, label_b: b, "Δ (B − A)": delta})
+        rows.append({"Statistic": label, label_a: cell(stats_a.get(key)),
+                     label_b: cell(stats_b.get(key)), "Δ (B − A)": delta})
     return pd.DataFrame(rows)

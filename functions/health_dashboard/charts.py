@@ -354,36 +354,94 @@ def paired_cgm_overlay_fig(window_a: pd.DataFrame, window_b: pd.DataFrame,
     fig = _layout(fig, height=380)
     fig.update_layout(showlegend=True)
     fig.update_xaxes(title_text="minutes since meal", title_font=dict(color=MUTED))
-    fig.update_yaxes(title_text="mg/dL", title_font=dict(color=MUTED))
+    fig.update_yaxes(title_text="Glucose mg/dL", title_font=dict(color=MUTED))
     return fig
+
+
+def paired_hrv_overlay_fig(hrv_a: pd.DataFrame, hrv_b: pd.DataFrame,
+                           label_a: str, label_b: str) -> go.Figure:
+    """Paired Meal Experiment overlay: both nights' HRV on a shared 'minutes
+    since sleep start' axis, so two nights of different lengths (or that
+    simply started at different clock times) still line up on when sleep
+    began. Same per-meal color convention as paired_cgm_overlay_fig (blue =
+    Meal A, orange = Meal B) so the two overlay charts read as one system.
+    (Each series' first reading IS sleep start — see data.load_hrv_for_sleep_date
+    / app.py's sleep_date derivation — so subtracting it converts wall-clock
+    time to minutes-since-sleep-start, same trick post_meal_window uses for
+    the glucose overlay.)
+    """
+    fig = go.Figure()
+    for hrv, label, color in [(hrv_a, label_a, BLUE), (hrv_b, label_b, ORANGE)]:
+        if hrv.empty:
+            continue
+        minutes = (hrv["ts"] - hrv["ts"].iloc[0]).dt.total_seconds() / 60
+        fig.add_trace(go.Scatter(x=minutes, y=hrv["hrv_value"], mode="lines",
+                                 name=label, line=dict(color=color, width=2),
+                                 hovertemplate="%{y:.0f} ms<extra>" + label + "</extra>"))
+
+    # Minute 0 IS sleep start for both curves, so one shared dashed marker —
+    # mirrors the "Meal" vline in paired_cgm_overlay_fig.
+    fig.add_vline(x=0, line=dict(color=INK_2, width=2, dash="dash"),
+                  annotation_text="Sleep", annotation_position="top",
+                  annotation_font=dict(color=RED, size=11))
+
+    fig = _layout(fig, height=380)
+    fig.update_layout(showlegend=True)
+    fig.update_xaxes(title_text="minutes since sleep start", title_font=dict(color=MUTED))
+    fig.update_yaxes(title_text="HRV (ms)", title_font=dict(color=MUTED))
+    return fig
+
+
+def _bar_width_ms(ts: pd.Series, cap_ms: float = 15 * 60 * 1000) -> float:
+    """Median spacing between consecutive readings, in milliseconds, used as
+    a bar trace's width on a datetime x-axis. Median (not the auto-width
+    Plotly derives from the SMALLEST gap) so one anomalously close pair of
+    readings can't shrink every bar into a hairline; capped so a single large
+    sensor gap can't stretch bars into a solid block."""
+    diffs = ts.sort_values().diff().dropna().dt.total_seconds() * 1000
+    if diffs.empty:
+        return cap_ms
+    return min(float(diffs.median()), cap_ms)
 
 
 def overnight_hrv_glucose_fig(hrv: pd.DataFrame, glucose: pd.DataFrame) -> go.Figure:
     """HRV during the night's sleep (violet, left axis) paired with glucose
-    (blue, right axis) over the same overnight window.
+    (blue, right axis) over the same overnight window, as overlapping
+    semi-transparent bars — more legible than overlaid lines when the two
+    traces cross often.
 
     Dual-axis mechanics: the glucose trace declares yaxis="y2", and the
     layout's yaxis2 has overlaying="y" (drawn on the same plot area) and
     side="right" — two different scales sharing one time axis.
     """
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=hrv["ts"], y=hrv["hrv_value"], mode="lines+markers", name="HRV",
-        line=dict(color=VIOLET, width=2), marker=dict(size=5, color=VIOLET),
+    fig.add_trace(go.Bar(
+        x=hrv["ts"], y=hrv["hrv_value"], name="HRV",
+        marker=dict(color=VIOLET), opacity=0.6, width=_bar_width_ms(hrv["ts"]),
         hovertemplate="%{y:.0f} ms<extra>HRV</extra>",
     ))
-    g = break_time_gaps(glucose, "ts", pd.Timedelta(minutes=30))
-    fig.add_trace(go.Scatter(
-        x=g["ts"], y=g["glucose_mg_dl"], mode="lines", name="Glucose",
-        line=dict(color=BLUE, width=2), yaxis="y2",
+    fig.add_trace(go.Bar(
+        x=glucose["ts"], y=glucose["glucose_mg_dl"], name="Glucose", yaxis="y2",
+        marker=dict(color=ORANGE), opacity=0.35, width=_bar_width_ms(glucose["ts"]),
         hovertemplate="%{y:.0f} mg/dL<extra>Glucose</extra>",
     ))
+
+    # Sleep/Wake markers at the HRV series' first/last point — mirrors the
+    # "Meal" vline in meal_timeline_fig.
+    fig.add_vline(x=hrv["ts"].iloc[0], line=dict(color=INK_2, width=2, dash="dash"),
+                 annotation_text="Sleep", annotation_position="top",
+                 annotation_font=dict(color=RED, size=11))
+    fig.add_vline(x=hrv["ts"].iloc[-1], line=dict(color=INK_2, width=2, dash="dash"),
+                 annotation_text="Wake", annotation_position="top",
+                 annotation_font=dict(color=RED, size=11))
+
     fig = _layout(fig, height=380)
     fig.update_layout(
+        barmode="overlay",
         showlegend=True,
         yaxis=dict(title=dict(text="HRV (ms)", font=dict(color=VIOLET)),
                   gridcolor=GRID, tickfont=dict(color=MUTED)),
-        yaxis2=dict(title=dict(text="Glucose (mg/dL)", font=dict(color=BLUE)),
+        yaxis2=dict(title=dict(text="Glucose (mg/dL)", font=dict(color=ORANGE)),
                    overlaying="y", side="right", showgrid=False,
                    tickfont=dict(color=MUTED)),
     )

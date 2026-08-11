@@ -100,6 +100,14 @@ def _meal_items(items_json) -> list[dict]:
     return items_json or []
 
 
+def _fmt_time_12h(ts) -> str:
+    """'6:12 PM' — 12-hour time with no leading zero on the hour.
+    Cross-platform stand-in for strftime's %-I: Windows' C runtime doesn't
+    support the '-' no-pad flag (glibc/BSD only), so %-I works when deployed
+    to Cloud Run (Linux) but raises ValueError when run locally on Windows."""
+    return f"{int(ts.strftime('%I'))}:{ts.strftime('%M %p')}"
+
+
 def _meal_label(row) -> str:
     """One-line description used in the meal dropdowns,
     e.g. 'Jul 27, 6:12 PM — eggs, toast + 1 more (450 kcal)'."""
@@ -109,7 +117,7 @@ def _meal_label(row) -> str:
         foods += f" + {len(items) - 2} more"
     # pd.notna guards NULLs from BigQuery — formatting NaN would show "nan".
     kcal = f"{row['calories']:.0f} kcal" if pd.notna(row["calories"]) else "? kcal"
-    when = row["capture_ts"].strftime("%b %d, %-I:%M %p")
+    when = f"{row['capture_ts'].strftime('%b %d')}, {_fmt_time_12h(row['capture_ts'])}"
     return f"{when} — {foods or 'meal'} ({kcal})"
 
 
@@ -132,7 +140,7 @@ def _meal_card(row):
             else:
                 st.caption("No photo for this meal.")
         with macro_col:
-            st.caption(row["capture_ts"].strftime("%A, %b %d — %-I:%M %p"))
+            st.caption(f"{row['capture_ts'].strftime('%A, %b %d —')} {_fmt_time_12h(row['capture_ts'])}")
             items = _meal_items(row["items"])
             if items:
                 st.markdown("\n".join(f"- {i.get('food', '?')} ({i.get('grams', '?')} g)"
@@ -275,7 +283,7 @@ def _paired_experiment(user_id: str, meal_a, meal_b, acts_a, acts_b):
         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
     with st.container(border=True):
-        st.subheader("Statistics")
+        st.subheader("Glucose Statistics")
         st.caption("HRV/vagal-tone statistics aren't shown — this pipeline's HRV "
                    "capture window doesn't reliably cover the evening post-meal "
                    "period yet (see module docstring).")
@@ -475,6 +483,35 @@ else:  # Paired Meal Experiment
 
     # Slider + everything downstream of it, isolated in its own rerun scope.
     _paired_experiment(user_id, meal_a, meal_b, acts_a, acts_b)
+
+    # HRV Overlay: outside the fragment on purpose, like the meal cards above —
+    # it doesn't depend on hours_after, so there's no reason to redraw it on
+    # every slider drag. Sleep date = the morning after each meal, same
+    # derivation _overnight_hrv_section uses for the Single Meal tab (Garmin
+    # attributes a night's sleep to the following morning's calendar date).
+    sleep_date_a = (meal_a["capture_ts"].normalize() + pd.Timedelta(days=1)).date()
+    sleep_date_b = (meal_b["capture_ts"].normalize() + pd.Timedelta(days=1)).date()
+    hrv_a = data.load_hrv_for_sleep_date(user_id, sleep_date_a.isoformat())
+    hrv_b = data.load_hrv_for_sleep_date(user_id, sleep_date_b.isoformat())
+
+    with st.container(border=True):
+        st.subheader("😴 Sleep HRV Overlay")
+        if hrv_a.empty and hrv_b.empty:
+            st.caption("No HRV data recorded for either night.")
+        else:
+            fig = charts.paired_hrv_overlay_fig(hrv_a, hrv_b, "Meal A", "Meal B")
+            st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+    with st.container(border=True):
+        st.subheader("Sleep HRV Statistics")
+        if hrv_a.empty and hrv_b.empty:
+            st.caption("No HRV data recorded for either night.")
+        else:
+            hrv_stats_a = experiment.hrv_sleep_stats(hrv_a)
+            hrv_stats_b = experiment.hrv_sleep_stats(hrv_b)
+            st.dataframe(experiment.compare_meal_stats(hrv_stats_a, hrv_stats_b, "Meal A", "Meal B",
+                                                        stat_labels=experiment.HRV_STAT_LABELS),
+                        width="stretch", hide_index=True)
 
 st.divider()
 st.caption(
