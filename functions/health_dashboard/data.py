@@ -31,10 +31,10 @@ PROJECT = "digitaltwin-499202"
 DATASET = f"{PROJECT}.health_twin"
 
 # The complete set of subjects in the pipeline. Every user-filtered query is
-# checked against this list (see _user_param), so only these three strings can
+# checked against this list (see _user_param), so only these strings can
 # ever reach a query parameter — the picker in app.py builds its options from
 # this same list, which keeps UI and validation from drifting apart.
-SUBJECTS = ["kevin", "christian", "vincent"]
+SUBJECTS = ["kevin", "christian", "vincent", "daniel"]
 DEFAULT_SUBJECT = "kevin"
 
 CACHE_TTL_S = 1800  # refresh from BigQuery at most every 30 min
