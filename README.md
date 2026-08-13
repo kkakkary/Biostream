@@ -12,6 +12,8 @@ time series that analysis notebooks can slice per experiment.
 
 GCP project: `digitaltwin-499202` · region: `us-central1`
 
+**Dashboard:** https://health-dashboard-2datlfs2la-uc.a.run.app
+
 ## Data sources
 
 | Source | How it's ingested | BigQuery table(s) |
