@@ -1,7 +1,7 @@
 # Biostream — GCP data ingestion pipeline for N-of-1 studies
 
 A Google Cloud–hosted pipeline that continuously ingests multi-source health
-data for **3 subjects** (kevin, christian, vincent) into one BigQuery dataset,
+data for **4 subjects** (kevin, christian, vincent, daniel) into one BigQuery dataset,
 so we can run **N-of-1 studies** — single-subject experiments where each person
 serves as their own control (e.g. *how does this meal, medication, or habit
 change my glucose, HRV, or blood pressure?*).
@@ -22,6 +22,7 @@ GCP project: `digitaltwin-499202` · region: `us-central1`
 | **Garmin** overnight HRV datapoints | recorded during the daily sync | `hrv_readings` |
 | **CGM glucose** (FreeStyle Libre) | `libre-sync` polls a LibreLinkUp collector account | `glucose` |
 | **Blood pressure** (Omron) | `omron-sync`, daily poll of Omron Connect | `blood_pressure` |
+| **Garmin** activities/exercise | `garmin-activity-sync` Cloud Function, daily scheduled poll | `garmin_activities` |
 | **Meals** (photo and/or description → macros) | `meal-web` phone web app + `meal-upload` function; Vertex AI Gemini estimates macros | `meals`, `saved_meals` |
 | **Medications** | logged manually alongside daily data | `garmin_daily` (`medications` column) |
 
@@ -32,9 +33,10 @@ GCP project: `digitaltwin-499202` · region: `us-central1`
                                                                  ├─ Vertex AI Gemini → macros JSON
                                                                  └─► BigQuery meals / saved_meals
 
- Cloud Scheduler ─► garmin-sync (daily) ─► garmin_daily, hrv_readings
-                 ─► libre-sync          ─► glucose
-                 ─► omron-sync          ─► blood_pressure
+ Cloud Scheduler ─► garmin-sync (daily)          ─► garmin_daily, hrv_readings
+                 ─► garmin-activity-sync (daily) ─► garmin_activities
+                 ─► libre-sync                   ─► glucose
+                 ─► omron-sync                   ─► blood_pressure
 
  BigQuery dataset health_twin  (all tables date-partitioned, clustered by user_id)
         │
@@ -51,17 +53,21 @@ Secret Manager (`upload-token-<user>`, `garmin-token-<user>`, …) — never in 
 
 ```
 infra/               Infra-as-code: setup.sh, setup_cicd.sh, BigQuery table schemas
-config/              users.example.yaml (3-subject config; real users.yaml is gitignored)
+config/              users.example.yaml (subject-onboarding template; real users.yaml is gitignored)
 ingestion/
   garmin/            bootstrap_token.py — CLI fallback to onboard a Garmin token (operator use)
+                     decode_hrv_fit.py — decodes raw beat-to-beat RR intervals from a
+                     Garmin "Export Your Data" zip (FIT files), for HMM sleep-stage training
 functions/
   meal_upload/       photo/description -> Gemini -> BigQuery meals
   meal_web/          phone web app (meal logging, saved meals, time picker, Garmin connect)
   garmin_sync/       daily Garmin wellness poll -> garmin_daily + hrv_readings
+  garmin_activity_sync/ daily Garmin activity poll -> garmin_activities
   libre_sync/        LibreLinkUp CGM poll -> glucose
   omron_sync/        daily Omron blood-pressure poll -> blood_pressure
   upload_photo/      helper: push an image to Google Photos
-  health_dashboard/  public Streamlit dashboard (Cloud Run) showcasing one subject's data
+  health_dashboard/  multi-subject Streamlit dashboard (Cloud Run); public for kevin,
+                     password-gated per subject for everyone else
 notebooks/           Jupyter analyses over the BigQuery data (see notebooks/README.md)
 .github/workflows/   CI/CD: deploy changed services to GCP on merge to main (WIF, no keys)
 ```
@@ -122,7 +128,7 @@ Backfill history any time: `GET garmin-sync?days=N` (default 2 days).
 
 ## Privacy
 
-Health data for 3 people. The bucket is private with public-access-prevention;
+Health data for 4 people. The bucket is private with public-access-prevention;
 meal photos go through **Vertex AI Gemini** (inputs are *not* used to train
 Google's models, unlike the free AI Studio tier). Secrets live only in Secret
 Manager; `config/users.yaml` and `.env` are gitignored. CI/CD authenticates
