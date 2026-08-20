@@ -20,6 +20,7 @@ GCP project: `digitaltwin-499202` · region: `us-central1`
 |---|---|---|
 | **Garmin** daily wellness (sleep, steps, weight, …) | `garmin-sync` Cloud Function, daily scheduled poll | `garmin_daily` |
 | **Garmin** overnight HRV datapoints | recorded during the daily sync | `hrv_readings` |
+| **Garmin** sleeping heart rate datapoints | recorded during the daily sync | `hr_readings` |
 | **CGM glucose** (FreeStyle Libre) | `libre-sync` polls a LibreLinkUp collector account | `glucose` |
 | **Blood pressure** (Omron) | `omron-sync`, daily poll of Omron Connect | `blood_pressure` |
 | **Garmin** activities/exercise | `garmin-activity-sync` Cloud Function, daily scheduled poll | `garmin_activities` |
@@ -33,7 +34,7 @@ GCP project: `digitaltwin-499202` · region: `us-central1`
                                                                  ├─ Vertex AI Gemini → macros JSON
                                                                  └─► BigQuery meals / saved_meals
 
- Cloud Scheduler ─► garmin-sync (daily)          ─► garmin_daily, hrv_readings
+ Cloud Scheduler ─► garmin-sync (daily)          ─► garmin_daily, hrv_readings, hr_readings
                  ─► garmin-activity-sync (daily) ─► garmin_activities
                  ─► libre-sync                   ─► glucose
                  ─► omron-sync                   ─► blood_pressure
@@ -61,7 +62,7 @@ ingestion/
 functions/
   meal_upload/       photo/description -> Gemini -> BigQuery meals
   meal_web/          phone web app (meal logging, saved meals, time picker, Garmin connect)
-  garmin_sync/       daily Garmin wellness poll -> garmin_daily + hrv_readings
+  garmin_sync/       daily Garmin wellness poll -> garmin_daily + hrv_readings + hr_readings
   garmin_activity_sync/ daily Garmin activity poll -> garmin_activities
   libre_sync/        LibreLinkUp CGM poll -> glucose
   omron_sync/        daily Omron blood-pressure poll -> blood_pressure
