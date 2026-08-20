@@ -1,0 +1,6 @@
+[
+  {"name": "user_id",    "type": "STRING",   "mode": "REQUIRED", "description": "Which person this HR reading belongs to"},
+  {"name": "sleep_date", "type": "DATE",     "mode": "REQUIRED", "description": "Calendar date of the sleep night (matches garmin_daily.date); groups a night's readings"},
+  {"name": "ts",         "type": "TIMESTAMP","mode": "REQUIRED", "description": "Reading timestamp (UTC). Garmin samples heart rate about every 2 minutes; only readings inside that night's sleep window are kept"},
+  {"name": "hr_value",   "type": "INTEGER",  "mode": "NULLABLE", "description": "Heart rate (bpm) for this ~2-min window"}
+]
