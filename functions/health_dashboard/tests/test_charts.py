@@ -230,3 +230,36 @@ def test_sleep_fig_stacks_three_stages():
     assert [t.name for t in fig.data] == ["Deep", "REM", "Light"]
     assert fig.data[0].y[0] == 2.0  # Deep trace carries deep_h, not a swap
     assert fig.layout.barmode == "stack"
+
+def test_latency_distribution_fig_one_violin_per_group():
+    pairs = pd.DataFrame({
+        "date": pd.to_datetime(["2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23"]),
+        "group": ["Active", "Sedentary", "Active", "Sedentary"],
+        "total_steps": [12000, 2000, 11000, 1500],
+        "intensity_min": [45, 0, 60, 0],
+        "n_activities": [1, 0, 0, 0],
+        "deep_sleep_latency_min": [12.0, 30.0, 18.0, 41.0],
+    })
+
+    fig = charts.latency_distribution_fig(pairs)
+
+    assert [t.name for t in fig.data] == ["Active", "Sedentary"]
+    assert list(fig.data[0].y) == [12.0, 18.0]       # Active nights only
+    # Box/violin tooltips are per-point: unified-x hover would merge groups.
+    assert fig.layout.hovermode == "closest"
+    # Each group keeps its own hue (active orange = the page's exertion color).
+    assert fig.data[0].line.color == charts.LATENCY_GROUP_COLORS["Active"]
+    assert fig.data[1].line.color == charts.LATENCY_GROUP_COLORS["Sedentary"]
+
+
+def test_latency_distribution_fig_skips_an_empty_group():
+    pairs = pd.DataFrame({
+        "date": pd.to_datetime(["2026-08-20", "2026-08-21"]),
+        "group": ["Active", "Active"],
+        "total_steps": [12000, 11000],
+        "intensity_min": [45, 60],
+        "n_activities": [1, 1],
+        "deep_sleep_latency_min": [12.0, 18.0],
+    })
+    fig = charts.latency_distribution_fig(pairs)
+    assert [t.name for t in fig.data] == ["Active"]

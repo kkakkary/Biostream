@@ -448,6 +448,53 @@ def overnight_hrv_glucose_fig(hrv: pd.DataFrame, glucose: pd.DataFrame) -> go.Fi
     return fig
 
 
+# Activity vs Deep Sleep group hues: active reuses the steps/exercise ORANGE
+# (one entity, one hue — exertion is already orange everywhere on this page);
+# sedentary gets the neutral gray-violet, deliberately colorless next to it.
+LATENCY_GROUP_COLORS = {"Active": ORANGE, "Sedentary": MUTED}
+
+
+def latency_distribution_fig(pairs: pd.DataFrame) -> go.Figure:
+    """Activity vs Deep Sleep view: the full distribution of nightly
+    deep-sleep latency for active vs sedentary days — one violin per group
+    with the box (median + quartiles) inside it and every actual night as a
+    jittered point beside it. Three layers of the same data on purpose: the
+    points are the evidence, the box is the summary, the violin is the shape.
+
+    `pairs` is transforms.activity_sleep_pairs output: one row per classified
+    day, with that day's group and the FOLLOWING night's latency.
+    """
+    fig = go.Figure()
+    for group, color in LATENCY_GROUP_COLORS.items():
+        sub = pairs[pairs["group"] == group]
+        if sub.empty:
+            continue
+        fig.add_trace(go.Violin(
+            x=sub["group"], y=sub["deep_sleep_latency_min"], name=group,
+            line=dict(color=color, width=2), fillcolor="rgba(0,0,0,0)",
+            box=dict(visible=True, width=0.25, line=dict(color=color, width=1.5)),
+            meanline=dict(visible=True),
+            # points="all" + pointpos pushes the raw nights to the violin's
+            # side; spanmode="hard" stops the density estimate from bleeding
+            # past the actual min/max into impossible negative latencies.
+            points="all", jitter=0.35, pointpos=-1.6, spanmode="hard",
+            marker=dict(size=7, color=color, opacity=0.6,
+                        line=dict(color=SURFACE, width=1)),
+            # customdata rides one extra column per point into the tooltip:
+            # WHICH day this night followed, so an outlier is chaseable.
+            customdata=sub["date"].dt.strftime("%b %d").to_numpy(),
+            hovertemplate="%{y:.0f} min<br>after %{customdata}<extra>" + group + "</extra>",
+            width=0.9,
+        ))
+    fig = _layout(fig, height=420)
+    # Box/violin tooltips are per-point, not per-x — the shared x-unified
+    # hover would try to merge both groups into one box. "closest" instead.
+    fig.update_layout(hovermode="closest", violinmode="group")
+    fig.update_yaxes(title_text="minutes to first deep sleep",
+                     title_font=dict(color=MUTED), rangemode="tozero")
+    return fig
+
+
 def bp_fig(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     for name, col, color in [("Systolic", "systolic", BLUE),

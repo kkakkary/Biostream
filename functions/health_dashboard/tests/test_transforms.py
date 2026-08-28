@@ -109,3 +109,88 @@ def test_kpi_row_handles_sparse_history():
     assert kpi["steps_yday"] is None
     assert kpi["glucose_avg"] is None
     assert kpi["time_in_range"] is None
+
+
+# --- Activity vs Deep Sleep: day classification + next-night pairing --------
+
+def _asp_daily(rows):
+    """Rows for activity_sleep_pairs: only the columns it reads."""
+    cols = ["date", "total_steps", "moderate_intensity_min",
+            "vigorous_intensity_min", "deep_sleep_latency_min"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _asp_acts(rows):
+    return pd.DataFrame(rows, columns=["date", "n_activities", "activity_seconds"])
+
+
+def test_activity_sleep_pairs_uses_next_nights_latency():
+    # An active Monday (workout) must be judged by TUESDAY's latency row —
+    # garmin_daily stores a night on the morning it ended.
+    daily = _asp_daily([
+        [date(2026, 8, 24), 12000, 0, 0, 40],   # Mon: active; Mon-morning latency 40 (belongs to Sunday)
+        [date(2026, 8, 25), 1000, 0, 0, 15],    # Tue row: latency 15 = Mon night's
+    ])
+    out = transforms.activity_sleep_pairs(daily, _asp_acts([]))
+    mon = out[out["date"] == pd.Timestamp("2026-08-24")]
+    assert mon.iloc[0]["group"] == "Active"
+    assert mon.iloc[0]["deep_sleep_latency_min"] == 15   # Tue's row, not Mon's
+
+
+def test_intensity_minutes_alone_make_a_day_active():
+    # The un-recorded-exertion case: barely any steps, no logged workout, but
+    # 20 moderate + 10 vigorous minutes = 40 weighted (vigorous counts double)
+    # -> Active on sustained-elevated-HR evidence alone.
+    daily = _asp_daily([
+        [date(2026, 8, 24), 2000, 20, 10, None],
+        [date(2026, 8, 25), 2000, 0, 0, 22],
+    ])
+    out = transforms.activity_sleep_pairs(daily, _asp_acts([]))
+    assert out.iloc[0]["group"] == "Active"
+    assert out.iloc[0]["intensity_min"] == 40
+
+
+def test_quiet_day_is_sedentary_and_middling_day_is_excluded():
+    daily = _asp_daily([
+        [date(2026, 8, 24), 3000, 0, 0, None],  # quiet everywhere -> Sedentary
+        [date(2026, 8, 25), 7000, 15, 0, 30],   # middling steps + HR -> excluded
+        [date(2026, 8, 26), 1000, 0, 0, 25],    # latency rows for both nights
+    ])
+    out = transforms.activity_sleep_pairs(daily, _asp_acts([]))
+    assert list(out["group"]) == ["Sedentary"]
+    assert out.iloc[0]["date"] == pd.Timestamp("2026-08-24")
+
+
+def test_recorded_workout_makes_a_low_step_day_active():
+    daily = _asp_daily([
+        [date(2026, 8, 24), 2000, 0, 0, None],  # a swim: few steps, logged workout
+        [date(2026, 8, 25), 2000, 0, 0, 18],
+    ])
+    acts = _asp_acts([[date(2026, 8, 24), 1, 3600]])
+    out = transforms.activity_sleep_pairs(daily, acts)
+    assert out.iloc[0]["group"] == "Active"
+    assert out.iloc[0]["n_activities"] == 1
+
+
+def test_days_without_next_night_latency_are_dropped():
+    # Active day, but the following night has no stage timeline (NULL) and
+    # the day after doesn't even have a row -> nothing to compare, no pair.
+    daily = _asp_daily([
+        [date(2026, 8, 24), 15000, 60, 20, None],
+        [date(2026, 8, 25), 15000, 60, 20, None],
+    ])
+    out = transforms.activity_sleep_pairs(daily, _asp_acts([]))
+    assert out.empty
+
+
+def test_no_steps_data_never_counts_as_sedentary():
+    # Watch not worn: steps NULL. That day is unknown, not sedentary — only
+    # the genuinely-quiet day should classify.
+    daily = _asp_daily([
+        [date(2026, 8, 24), None, 0, 0, None],
+        [date(2026, 8, 25), 500, 0, 0, 12],
+        [date(2026, 8, 26), 1000, 0, 0, 33],
+    ])
+    out = transforms.activity_sleep_pairs(daily, _asp_acts([]))
+    assert list(out["date"]) == [pd.Timestamp("2026-08-25")]
+    assert list(out["group"]) == ["Sedentary"]

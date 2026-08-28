@@ -186,3 +186,57 @@ def test_activities_around_meal_judges_on_start_not_overlap():
     late_start = _activities(200)
     late_start.loc[0, "end_ts"] = MEAL_TS + pd.Timedelta(minutes=400)
     assert experiment.activities_around_meal(late_start, MEAL_TS).empty
+
+
+# --- Activity vs Deep Sleep: distribution summary + Welch's t-test ----------
+
+def test_distribution_summary_reports_the_shape():
+    s = pd.Series([10, 20, 30, 40, 50])
+    out = experiment.distribution_summary(s)
+    assert out["n_nights"] == 5
+    assert out["mean_min"] == 30.0
+    assert out["median_min"] == 30.0
+    assert out["min_min"] == 10.0
+    assert out["max_min"] == 50.0
+    # IQR is a WindowStat: display shows the edges, value the width (Δ column).
+    assert out["iqr_min"].display == "20 – 40"
+    assert out["iqr_min"].value == 20.0
+
+
+def test_distribution_summary_empty_and_single_night():
+    empty = experiment.distribution_summary(pd.Series(dtype=float))
+    assert all(v is None for v in empty.values())
+    one = experiment.distribution_summary(pd.Series([25.0]))
+    assert one["n_nights"] == 1
+    assert one["sd_min"] is None   # one point has no spread
+
+
+def test_welch_ttest_flags_a_real_difference():
+    # Two clearly separated groups with a little noise: the test must find a
+    # negative t (first group faster), a small p, and a large effect size.
+    active = pd.Series([12, 15, 11, 14, 13, 16, 12])
+    sedentary = pd.Series([28, 33, 30, 35, 29, 31])
+    out = experiment.welch_ttest(active, sedentary)
+    assert out["t"] < 0
+    assert out["p"] < 0.001
+    assert out["mean_diff_min"] < -15
+    assert out["cohen_d"] < -2      # enormous separation by design
+    assert out["df"] > 0
+
+
+def test_welch_ttest_finds_nothing_in_identical_groups():
+    same = pd.Series([20, 25, 30, 22, 27, 24])
+    out = experiment.welch_ttest(same, same.copy())
+    assert out["t"] == 0.0
+    assert out["p"] == pytest.approx(1.0)
+    assert out["mean_diff_min"] == 0.0
+
+
+def test_welch_ttest_refuses_tiny_groups():
+    # Below MIN_NIGHTS_FOR_TTEST in EITHER group -> None, not a junk p-value.
+    enough = pd.Series([20, 25, 30, 22, 27])
+    assert experiment.welch_ttest(pd.Series([1, 2]), enough) is None
+    assert experiment.welch_ttest(enough, pd.Series([1, 2, 3, 4])) is None
+    # NaNs don't count toward the minimum either.
+    padded = pd.Series([1, 2, None, None, None, None])
+    assert experiment.welch_ttest(padded, enough) is None

@@ -94,7 +94,9 @@ def load_daily(user_id: str, days: int) -> pd.DataFrame:
     return _query(f"""
         SELECT date, total_steps, resting_hr, avg_stress,
                body_battery_high, body_battery_low,
-               sleep_seconds, deep_sleep_seconds, rem_sleep_seconds, hrv_avg
+               moderate_intensity_min, vigorous_intensity_min,
+               sleep_seconds, deep_sleep_seconds, rem_sleep_seconds,
+               deep_sleep_latency_min, hrv_avg
         FROM `{DATASET}.garmin_daily`
         WHERE user_id = @user_id
           AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
@@ -194,6 +196,24 @@ def load_bp_window(user_id: str, start_ts, end_ts) -> pd.DataFrame:
         WHERE user_id = @user_id AND measurement_ts_utc BETWEEN @start_ts AND @end_ts
         ORDER BY measurement_ts_utc
     """, _window_params(user_id, start_ts, end_ts))
+
+
+@st.cache_data(ttl=CACHE_TTL_S)
+def load_activity_daily(user_id: str, days: int) -> pd.DataFrame:
+    """Recorded Garmin activities rolled up to one row per calendar day
+    (how many workouts, total minutes). Days with no recorded activity simply
+    have no row — the transform treats a missing day as zero activity.
+    DATE(start_ts) buckets each workout by the day it STARTED."""
+    return _query(f"""
+        SELECT DATE(start_ts) AS date,
+               COUNT(*) AS n_activities,
+               SUM(duration_seconds) AS activity_seconds
+        FROM `{DATASET}.garmin_activities`
+        WHERE user_id = @user_id
+          AND DATE(start_ts) >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
+        GROUP BY date
+        ORDER BY date
+    """, user_id, days)
 
 
 @st.cache_data(ttl=CACHE_TTL_S)

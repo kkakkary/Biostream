@@ -24,6 +24,7 @@ from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
+from scipy import stats as scipy_stats
 
 DEFAULT_BASELINE_WINDOW_MIN = 30
 DEFAULT_POST_MEAL_HOURS = 15  # meal through ~next-morning
@@ -307,9 +308,85 @@ HRV_STAT_LABELS = {
 }
 
 
+# --- Activity vs Deep Sleep: two-group distribution comparison --------------
+
+def distribution_summary(values: pd.Series) -> dict:
+    """Descriptive statistics for one group's nights of deep-sleep latency.
+    Everything is minutes. The IQR (25th–75th percentile span) is reported as
+    a WindowStat-style display string ('18 – 34') plus its width for the Δ
+    column — a spread has two edges, but its *size* is the comparable number.
+    """
+    v = pd.to_numeric(values, errors="coerce").dropna()
+    if v.empty:
+        return {k: None for k in DIST_STAT_LABELS}
+    q1, q3 = float(v.quantile(0.25)), float(v.quantile(0.75))
+    return {
+        "n_nights": int(len(v)),
+        "mean_min": round(float(v.mean()), 1),
+        "median_min": round(float(v.median()), 1),
+        # ddof=1 = sample (not population) standard deviation — the group is
+        # a sample of all possible such nights. None for a single night:
+        # one point has no spread.
+        "sd_min": round(float(v.std(ddof=1)), 1) if len(v) >= 2 else None,
+        "iqr_min": WindowStat(f"{q1:.0f} – {q3:.0f}", round(q3 - q1, 1)),
+        "min_min": round(float(v.min()), 1),
+        "max_min": round(float(v.max()), 1),
+    }
+
+
+DIST_STAT_LABELS = {
+    "n_nights": "Nights (n)",
+    "mean_min": "Mean latency (min)",
+    "median_min": "Median latency (min)",
+    "sd_min": "Std deviation (min)",
+    "iqr_min": "IQR, 25th–75th pct (min)",
+    "min_min": "Fastest night (min)",
+    "max_min": "Slowest night (min)",
+}
+
+# Fewer nights than this in either group and a t-test is theater, not
+# statistics — the p-value would swing wildly on any one night.
+MIN_NIGHTS_FOR_TTEST = 5
+
+
+def welch_ttest(a: pd.Series, b: pd.Series) -> dict | None:
+    """Welch's two-sample t-test: is the difference between the two groups'
+    MEAN latencies larger than their night-to-night noise explains?
+
+    Welch's variant (equal_var=False) rather than Student's classic test
+    because the two groups will rarely have equal spread or equal size —
+    Welch's makes neither assumption and costs nothing when they happen to.
+
+    Returns None with fewer than MIN_NIGHTS_FOR_TTEST nights in either group.
+    Otherwise: t (signed difference in units of its own standard error),
+    df (Welch's effective degrees of freedom), p (two-sided: probability of a
+    gap at least this large if activity truly made no difference), mean_diff
+    (a - b, minutes), and Cohen's d (the gap in units of pooled night-to-night
+    spread — a scale-free effect size: ~0.2 small, ~0.5 medium, ~0.8 large).
+    """
+    a = pd.to_numeric(a, errors="coerce").dropna()
+    b = pd.to_numeric(b, errors="coerce").dropna()
+    if len(a) < MIN_NIGHTS_FOR_TTEST or len(b) < MIN_NIGHTS_FOR_TTEST:
+        return None
+    result = scipy_stats.ttest_ind(a, b, equal_var=False)
+    # Pooled SD for Cohen's d (this one does use the classic pooled formula —
+    # d is a descriptive effect size, not part of Welch's inference).
+    pooled_sd = np.sqrt(((len(a) - 1) * a.var(ddof=1) + (len(b) - 1) * b.var(ddof=1))
+                        / (len(a) + len(b) - 2))
+    mean_diff = float(a.mean() - b.mean())
+    return {
+        "t": round(float(result.statistic), 2),
+        "df": round(float(result.df), 1),
+        "p": float(result.pvalue),
+        "mean_diff_min": round(mean_diff, 1),
+        "cohen_d": round(mean_diff / pooled_sd, 2) if pooled_sd > 0 else None,
+    }
+
+
 def compare_meal_stats(stats_a: dict, stats_b: dict,
                        label_a: str = "Meal A", label_b: str = "Meal B",
-                       stat_labels: dict = STAT_LABELS) -> pd.DataFrame:
+                       stat_labels: dict = STAT_LABELS,
+                       delta_label: str = "Δ (B − A)") -> pd.DataFrame:
     """Tidy side-by-side comparison table for the Paired Meal Experiment view.
     stat_labels selects which stat dict this table is for (STAT_LABELS for
     cgm_meal_stats, HRV_STAT_LABELS for hrv_sleep_stats) — same shape either
@@ -331,5 +408,5 @@ def compare_meal_stats(stats_a: dict, stats_b: dict,
         a, b = numeric(stats_a.get(key)), numeric(stats_b.get(key))
         delta = round(b - a, 2) if a is not None and b is not None else None
         rows.append({"Statistic": label, label_a: cell(stats_a.get(key)),
-                     label_b: cell(stats_b.get(key)), "Δ (B − A)": delta})
+                     label_b: cell(stats_b.get(key)), delta_label: delta})
     return pd.DataFrame(rows)

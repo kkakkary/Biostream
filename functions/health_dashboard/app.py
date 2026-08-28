@@ -48,6 +48,7 @@ import auth
 import charts
 import data
 import experiment
+import transforms
 
 # Path(__file__).parent = the directory this file lives in, so the logo is
 # found no matter where the app is launched from.
@@ -291,6 +292,121 @@ def _paired_experiment(user_id: str, meal_a, meal_b, acts_a, acts_b):
                      width="stretch", hide_index=True)
 
 
+@st.fragment
+def _activity_sleep_view(user_id: str):
+    """Activity vs Deep Sleep: do physically active days buy a faster descent
+    into deep sleep than sedentary days?
+
+    A fragment for the same reason _paired_experiment is one: the lookback
+    control genuinely changes the data (different queries, different nights),
+    but its blast radius is this view alone — the header, auth gate and view
+    toggle have no reason to rerun when it changes.
+
+    The analysis pipeline, all defined elsewhere and only ASSEMBLED here
+    (app.py's no-math rule): data.load_daily + data.load_activity_daily feed
+    transforms.activity_sleep_pairs (day classification + next-night pairing),
+    whose output feeds charts.latency_distribution_fig (the picture) and
+    experiment.distribution_summary / welch_ttest (the numbers).
+    """
+    st.caption(
+        "Each day is classified by how much you actually moved — a recorded "
+        f"workout, **{transforms.ACTIVE_INTENSITY_MIN}+ intensity minutes** "
+        "(Garmin's sustained-elevated-heart-rate metric, so unrecorded exertion "
+        f"still counts), or {transforms.ACTIVE_STEPS:,}+ steps makes a day "
+        f"**Active**; none of those and under {transforms.SEDENTARY_STEPS:,} "
+        "steps makes it **Sedentary**; in-between days are excluded. Each day "
+        "is then paired with the night that FOLLOWED it: minutes from falling "
+        "asleep to the first deep-sleep stage."
+    )
+
+    # or-fallback for the same segmented_control-returns-None quirk as above.
+    days = st.segmented_control("Lookback", options=[60, 90, 180, 365], default=90,
+                                format_func=lambda d: f"{d} days") or 90
+
+    daily = data.load_daily(user_id, days)
+    if daily.empty:
+        st.info(f"No Garmin daily data yet for {user_id.title()}.")
+        return
+    pairs = transforms.activity_sleep_pairs(daily, data.load_activity_daily(user_id, days))
+
+    # Latency needs the sleep-stage timeline, which the sync only started
+    # storing in late Aug 2026 — older nights show up here only after a
+    # re-sync. Say so, or an empty chart reads like a bug.
+    staged_nights = int(daily["deep_sleep_latency_min"].notna().sum())
+    if pairs.empty:
+        st.info("No classifiable day + staged-night pairs in this window yet. "
+                f"({staged_nights} of {len(daily)} nights have a sleep-stage "
+                "timeline — nights synced before the stage pipeline existed "
+                "fill in as history is re-synced.)")
+        return
+
+    active = pairs.loc[pairs["group"] == "Active", "deep_sleep_latency_min"]
+    sedentary = pairs.loc[pairs["group"] == "Sedentary", "deep_sleep_latency_min"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Active days", f"{len(active)}", border=True,
+              help="Days classified Active that also have a staged next night.")
+    m2.metric("Median latency, active (min)", _stat(active.median()), border=True)
+    m3.metric("Sedentary days", f"{len(sedentary)}", border=True)
+    m4.metric("Median latency, sedentary (min)", _stat(sedentary.median()), border=True)
+
+    with st.container(border=True):
+        st.subheader("😴 Time to Deep Sleep — Distribution")
+        st.plotly_chart(charts.latency_distribution_fig(pairs),
+                        width="stretch", config=PLOTLY_CONFIG)
+        st.caption("Each point is one night (hover for the day it followed); "
+                   "the box is median + quartiles, the outline the "
+                   "distribution's shape.")
+
+    with st.container(border=True):
+        st.subheader("Distribution Detail")
+        # Sedentary is column A / Active column B so the Δ column reads
+        # Active − Sedentary: negative mean/median Δ = active days fell into
+        # deep sleep faster.
+        st.dataframe(experiment.compare_meal_stats(
+            experiment.distribution_summary(sedentary),
+            experiment.distribution_summary(active),
+            "Sedentary", "Active",
+            stat_labels=experiment.DIST_STAT_LABELS,
+            delta_label="Δ (Active − Sedentary)"),
+            width="stretch", hide_index=True)
+
+    with st.container(border=True):
+        st.subheader("Welch's t-test")
+        result = experiment.welch_ttest(active, sedentary)
+        if result is None:
+            st.caption(f"Needs at least {experiment.MIN_NIGHTS_FOR_TTEST} nights "
+                       "in each group before a t-test means anything — keep "
+                       "wearing the watch.")
+            return
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("t statistic", _stat(result["t"], "{:.2f}"), border=True,
+                  help="The group difference measured in units of its own "
+                       "standard error; further from 0 = stronger signal.")
+        t2.metric("p-value", _stat(result["p"], "{:.3f}"), border=True,
+                  help="Probability of a gap at least this large if activity "
+                       "truly made no difference (two-sided, "
+                       f"df = {result['df']:.1f}).")
+        t3.metric("Mean difference (min)", _stat(result["mean_diff_min"], "{:+.1f}"),
+                  border=True, help="Active mean minus sedentary mean; negative "
+                                    "= faster to deep sleep after active days.")
+        t4.metric("Cohen's d", _stat(result["cohen_d"], "{:.2f}"), border=True,
+                  help="Effect size: the gap in units of night-to-night spread. "
+                       "~0.2 small, ~0.5 medium, ~0.8 large.")
+
+        faster = "faster" if result["mean_diff_min"] < 0 else "slower"
+        verdict = ("unlikely to be chance alone (p < 0.05)" if result["p"] < 0.05
+                   else "within what chance alone could produce (p ≥ 0.05)")
+        st.caption(
+            f"On average, nights after active days reached deep sleep "
+            f"**{abs(result['mean_diff_min']):.1f} min {faster}** than after "
+            f"sedentary days — a difference {verdict}. Observational, not "
+            "causal: active days differ from sedentary ones in more ways than "
+            "movement (caffeine, stress, schedule), and consecutive nights "
+            "aren't fully independent samples."
+        )
+
+
 # ---- Page starts rendering here (top of the visible page) ------------------
 # Three columns across the header: logo, title, subject picker. Note the
 # `with` blocks run out of visual order on purpose — the title text depends on
@@ -327,17 +443,21 @@ if not auth.gate(user_id):
 
 # The view toggle. segmented_control returns None until first clicked,
 # hence the `or "Single Meal"` fallback.
-view = st.segmented_control("View", options=["Single Meal", "Paired Meal Experiment"],
+view = st.segmented_control("View", options=["Single Meal", "Paired Meal Experiment",
+                                             "Activity vs Deep Sleep"],
                             default="Single Meal", label_visibility="collapsed") or "Single Meal"
 
 # Every load_* call below takes user_id, so switching subjects re-keys the
 # cache and re-queries rather than reusing the previous subject's frames.
-meals = data.load_meals(user_id)
-if meals.empty:
-    st.info(f"No meals logged yet for {user_id.title()}.")
-    st.stop()   # halts the script — nothing below renders
-# Add a _label column (the dropdown text) by applying _meal_label to each row.
-meals = meals.assign(_label=meals.apply(_meal_label, axis=1))
+# The meal pickers only exist in the two meal views — Activity vs Deep Sleep
+# is meal-free, so it must not load meals or stop on an empty meals table.
+if view != "Activity vs Deep Sleep":
+    meals = data.load_meals(user_id)
+    if meals.empty:
+        st.info(f"No meals logged yet for {user_id.title()}.")
+        st.stop()   # halts the script — nothing below renders
+    # Add a _label column (the dropdown text) by applying _meal_label to each row.
+    meals = meals.assign(_label=meals.apply(_meal_label, axis=1))
 
 if view == "Single Meal":
     selected_label = st.selectbox("Meal", meals["_label"])
@@ -398,7 +518,7 @@ if view == "Single Meal":
 
     _overnight_hrv_section(user_id, meal_ts)
 
-else:  # Paired Meal Experiment
+elif view == "Paired Meal Experiment":
     st.caption(
         "Pick any two meals to compare — e.g. the same dinner with and without "
         "a post-meal walk. **Meal B is the exercise arm**, Meal A the control. "
@@ -512,6 +632,9 @@ else:  # Paired Meal Experiment
             st.dataframe(experiment.compare_meal_stats(hrv_stats_a, hrv_stats_b, "Meal A", "Meal B",
                                                         stat_labels=experiment.HRV_STAT_LABELS),
                         width="stretch", hide_index=True)
+
+else:  # Activity vs Deep Sleep
+    _activity_sleep_view(user_id)
 
 st.divider()
 st.caption(
