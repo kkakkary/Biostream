@@ -240,8 +240,8 @@ def _intensity_sleep_view(user_id: str):
     st.caption(
         "Does an active day get you into deep sleep faster? Each night is "
         "paired with the day **before** it and grouped by that day's Garmin "
-        f"intensity minutes (moderate + 2×vigorous): ≥ {threshold} min = "
-        f"active day, < {threshold} = rest day. Latency is minutes from "
+        f"intensity minutes (moderate + 2×vigorous): > {threshold} min = "
+        f"active day, ≤ {threshold} = rest day. Latency is minutes from "
         "sleep onset to the first deep-sleep stage."
     )
     df = data.load_intensity_sleep(user_id)
@@ -261,13 +261,16 @@ def _intensity_sleep_view(user_id: str):
 
     with st.container(border=True):
         st.subheader("Welch's t-test")
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric(f"Active nights (≥ {threshold})", result["n_a"], border=True,
-                  help="Nights following a day at or above the intensity threshold.")
+        # Two rows of 3, not one of 6 — six-across left labels like "Rest
+        # nights (≤ 45)" clipped mid-word at normal window widths.
+        c1, c2, c3 = st.columns(3)
+        c1.metric(f"Active nights (> {threshold})", result["n_a"], border=True,
+                  help="Nights following a day above the intensity threshold.")
         c2.metric("Active mean (min)", _stat(result["mean_a"], "{:.1f}"), border=True,
                   help=None if result["sd_a"] is None else f"SD: {result['sd_a']:.1f} min")
-        c3.metric(f"Rest nights (< {threshold})", result["n_b"], border=True,
-                  help="Nights following a day below the intensity threshold.")
+        c3.metric(f"Rest nights (≤ {threshold})", result["n_b"], border=True,
+                  help="Nights following a day at or below the intensity threshold.")
+        c4, c5, c6 = st.columns(3)
         c4.metric("Rest mean (min)", _stat(result["mean_b"], "{:.1f}"), border=True,
                   help=None if result["sd_b"] is None else f"SD: {result['sd_b']:.1f} min")
         c5.metric("t statistic", _stat(result["t_stat"], "{:.2f}"), border=True,

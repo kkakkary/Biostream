@@ -35,15 +35,25 @@ def test_garmin_intensity_minutes_treats_nan_as_zero():
     assert list(experiment.garmin_intensity_minutes(df)) == [0, 15]
 
 
-def test_split_threshold_is_inclusive_and_converts_to_minutes():
-    """>= 20 goes active (the user-facing rule is '>= 20 intensity minutes'),
-    19 goes rest; latency comes back in minutes, not seconds."""
-    df = _frame([(20, 0, 600),    # exactly at threshold -> active, 10 min
-                 (19, 0, 1200),   # just under -> rest, 20 min
-                 (0, 10, 300)])   # 2x10 vigorous = 20 -> active, 5 min
-    active, rest = experiment.split_latency_by_intensity(df)
+def test_split_threshold_is_strictly_greater_than_and_converts_to_minutes():
+    """Strict >: exactly at the threshold stays a rest day (the user-facing
+    rule is '> threshold intensity minutes'); latency comes back in minutes,
+    not seconds. Threshold passed explicitly so this test doesn't drift
+    every time the business default (INTENSITY_THRESHOLD_MIN) is retuned."""
+    df = _frame([(41, 0, 600),    # just over threshold -> active, 10 min
+                 (40, 0, 1200),   # exactly at threshold -> rest, 20 min
+                 (0, 21, 300)])   # 2x21 vigorous = 42 -> active, 5 min
+    active, rest = experiment.split_latency_by_intensity(df, threshold=40)
     assert sorted(active) == [5.0, 10.0]
     assert list(rest) == [20.0]
+
+
+def test_split_threshold_custom_value_is_strict():
+    """A caller-supplied threshold is also strict >, not >=."""
+    df = _frame([(20, 0, 600), (19, 0, 1200)])
+    active, rest = experiment.split_latency_by_intensity(df, threshold=20)
+    assert active.empty
+    assert sorted(rest) == [10.0, 20.0]
 
 
 def test_welch_t_test_matches_hand_computation():

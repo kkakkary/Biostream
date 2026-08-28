@@ -312,10 +312,13 @@ HRV_STAT_LABELS = {
 # Intensity × Sleep view: does an active day speed up reaching deep sleep?
 # --------------------------------------------------------------------------- #
 
-# The grouping threshold: a day earning at least this many Garmin intensity
-# minutes counts as an "active day". 20/day tracks the common public-health
-# target of 150 moderate-intensity minutes a week.
-INTENSITY_THRESHOLD_MIN = 20
+# The grouping threshold: a day earning MORE than this many Garmin intensity
+# minutes counts as an "active day" (strict >, not >=). Raised from the
+# public-health target of 20/day — a threshold sweep across this pipeline's
+# subjects (see PR discussion) showed the 20/day cut mostly split noise from
+# noise (most days cluster near zero minutes); the signal, such as it is,
+# only shows up comparing genuinely hard days (60+ min) against the rest.
+INTENSITY_THRESHOLD_MIN = 45
 
 
 def garmin_intensity_minutes(df: pd.DataFrame) -> pd.Series:
@@ -332,11 +335,12 @@ def split_latency_by_intensity(df: pd.DataFrame,
                                ) -> tuple[pd.Series, pd.Series]:
     """Split the paired day/night rows (see data.load_intensity_sleep) into
     (active_days, rest_days) — each a Series of that night's deep-sleep
-    latency in MINUTES, grouped by whether the preceding day reached
-    `threshold` intensity minutes."""
+    latency in MINUTES, grouped by whether the preceding day earned MORE
+    THAN `threshold` intensity minutes (strict >, so a day at exactly the
+    threshold is a rest day)."""
     latency_min = df["deep_sleep_latency_seconds"].astype(float) / 60
     intensity = garmin_intensity_minutes(df)
-    return latency_min[intensity >= threshold], latency_min[intensity < threshold]
+    return latency_min[intensity > threshold], latency_min[intensity <= threshold]
 
 
 def welch_t_test(a: pd.Series, b: pd.Series) -> dict:
