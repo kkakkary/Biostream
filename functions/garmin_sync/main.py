@@ -6,7 +6,9 @@ pulls the last DAYS_BACK days of daily wellness + sleep + HRV, and idempotently
 upserts one row per (user, date) into garmin_daily.
 
 It also flattens the overnight HRV series (one value ~every 5 min during sleep)
-into per-reading rows in hrv_readings, for datapoint-level HRV tracking.
+into per-reading rows in hrv_readings, and the overnight heart rate series
+(~every 2 min, filtered to the sleep window) into hr_readings, for
+datapoint-level tracking.
 
 Idempotent + Preview-friendly: deletes the (user, date) rows it's about to
 write, then loads via a BigQuery load job (committed storage, not streaming).
@@ -51,6 +53,7 @@ DAYS_BACK = int(os.environ.get("DAYS_BACK", "2"))   # env vars are always string
 # "digitaltwin-499202.health_twin.garmin_daily"
 TABLE = f"{PROJECT}.{DATASET}.garmin_daily"
 HRV_READINGS = f"{PROJECT}.{DATASET}.hrv_readings"
+HR_READINGS = f"{PROJECT}.{DATASET}.hr_readings"
 
 # Clients created at module level (not inside a function) are reused across
 # invocations while the Cloud Function instance stays warm — much faster than
@@ -166,20 +169,54 @@ def _hrv_readings(user: str, date: str, hrv: dict) -> list[dict]:
     return out
 
 
-def _row(user: str, date: str, g: Garmin, hrv: dict) -> dict | None:
+def _hr_readings(user: str, date: str, sleep: dict, hr: dict) -> list[dict]:
+    """Flatten Garmin's continuous heart rate series (~one value per 2 min,
+    sampled all day) into per-reading rows for the hr_readings table, keeping
+    only the samples that fall inside that night's sleep window — this is
+    what makes them "sleeping HR" rather than all-day HR.
+
+    Garmin's heart-rate endpoint returns [timestampGMT_ms, bpm] pairs. The
+    sleep window bounds (also GMT ms) come from the same sleep dict used for
+    garmin_daily. Readings are shifted from GMT to local wall time using the
+    night's GMT/Local offset, matching hrv_readings.ts (which is local time
+    from Garmin's own readingTimeLocal) so the two tables stay comparable.
+    """
+    start_gmt = sleep.get("sleepStartTimestampGMT")
+    end_gmt = sleep.get("sleepEndTimestampGMT")
+    start_local = sleep.get("sleepStartTimestampLocal")
+    if not all(isinstance(x, (int, float)) for x in (start_gmt, end_gmt, start_local)):
+        return []  # no known sleep window for this night -> can't scope HR to "sleeping"
+    offset_ms = start_local - start_gmt
+    out = []
+    for point in (hr.get("heartRateValues") or []):
+        if not isinstance(point, list) or len(point) != 2:
+            continue
+        epoch_gmt_ms, bpm = point
+        if not isinstance(epoch_gmt_ms, (int, float)) or not (start_gmt <= epoch_gmt_ms <= end_gmt):
+            continue
+        if not isinstance(bpm, (int, float)):
+            continue
+        local_dt = dt.datetime.fromtimestamp(
+            (epoch_gmt_ms + offset_ms) / 1000, tz=dt.timezone.utc
+        ).replace(tzinfo=None)
+        out.append({"user_id": user, "sleep_date": date, "ts": local_dt.isoformat(), "hr_value": int(bpm)})
+    return out
+
+
+def _row(user: str, date: str, g: Garmin, hrv: dict, sleep_full: dict) -> dict | None:
     """Build the single garmin_daily row for one (user, date).
 
-    Makes three Garmin API calls (summary, sleep, body composition — HRV was
-    already fetched by the caller), each wrapped in _safe so a missing dataset
-    just yields NULLs instead of aborting the day.
+    Makes two Garmin API calls (summary, body composition — HRV and sleep
+    were already fetched by the caller), each wrapped in _safe so a missing
+    dataset just yields NULLs instead of aborting the day.
+
+    sleep_full is the WHOLE get_sleep_data payload: dailySleepDTO carries the
+    summary totals below, and its sibling sleepLevels (the stage-by-stage
+    timeline) is what deep_sleep_latency_min needs — the DTO alone can answer
+    "how much deep sleep" but not "how long until deep sleep".
     """
     us = _safe(lambda: g.get_user_summary(date)) or {}
-    # Keep the FULL sleep payload: dailySleepDTO carries the summary totals
-    # below, and its sibling sleepLevels (the stage-by-stage timeline) is what
-    # deep_sleep_latency_min needs — the DTO alone can't answer "how long
-    # until deep sleep", only "how much deep sleep".
-    sleep_full = _safe(lambda: g.get_sleep_data(date)) or {}
-    sleep = sleep_full.get("dailySleepDTO") or {}
+    sleep = (sleep_full or {}).get("dailySleepDTO") or {}
     hrv_sum = (hrv or {}).get("hrvSummary") or {}
     bc = _safe(lambda: g.get_body_composition(date, date)) or {}
     # The keys here must match the garmin_daily table schema exactly —
@@ -288,19 +325,21 @@ def _upsert(user: str, rows: list[dict]) -> None:
     ).result()
 
 
-def _upsert_readings(user: str, dates: list[str], rows: list[dict]) -> None:
-    """Idempotently replace the overnight HRV datapoints for these (user, night)
-    dates: delete the affected sleep_dates, then load the fresh readings.
-    Same delete-then-load pattern as _upsert, just for the hrv_readings table.
+def _upsert_readings(table: str, user: str, dates: list[str], rows: list[dict]) -> None:
+    """Idempotently replace the overnight datapoints for these (user, night)
+    dates in the given readings table: delete the affected sleep_dates, then
+    load the fresh readings. Same delete-then-load pattern as _upsert.
+    Shared by hrv_readings and hr_readings, which are both (user_id,
+    sleep_date, ts, value) tables.
     """
     _bq.query(
-        f"DELETE FROM `{HRV_READINGS}` WHERE user_id=@u AND sleep_date IN UNNEST(@d)",
+        f"DELETE FROM `{table}` WHERE user_id=@u AND sleep_date IN UNNEST(@d)",
         job_config=bigquery.QueryJobConfig(query_parameters=[
             bigquery.ScalarQueryParameter("u", "STRING", user),
             bigquery.ArrayQueryParameter("d", "DATE", dates)]),
     ).result()
     _bq.load_table_from_json(
-        rows, HRV_READINGS,
+        rows, table,
         job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
     ).result()
 
@@ -319,19 +358,28 @@ def garmin_sync(request):
         try:
             g = Garmin()
             g.login(_token(user))   # token login — no password/MFA round-trip
-            rows, readings = [], []
+            rows, readings, hr_readings = [], [], []
             for d in dates:
                 hrv = _safe(lambda: g.get_hrv_data(d)) or {}
-                r = _row(user, d, g, hrv)
+                # Fetch the FULL sleep payload once per day; _row needs its
+                # sleepLevels stage timeline (deep-sleep latency), while
+                # _hr_readings below only needs the dailySleepDTO window.
+                sleep_full = _safe(lambda: g.get_sleep_data(d)) or {}
+                sleep = sleep_full.get("dailySleepDTO") or {}
+                hr = _safe(lambda: g.get_heart_rates(d)) or {}
+                r = _row(user, d, g, hrv, sleep_full)
                 if r is not None:
                     rows.append(r)
                 readings.extend(_hrv_readings(user, d, hrv))
+                hr_readings.extend(_hr_readings(user, d, sleep, hr))
             if rows:
                 _upsert(user, rows)
             if readings:  # only touch nights we actually got readings for
                 # {r["sleep_date"] ...} is a set comprehension -> unique dates.
-                _upsert_readings(user, sorted({r["sleep_date"] for r in readings}), readings)
-            out[user] = {"days": len(rows), "hrv_readings": len(readings)}
+                _upsert_readings(HRV_READINGS, user, sorted({r["sleep_date"] for r in readings}), readings)
+            if hr_readings:
+                _upsert_readings(HR_READINGS, user, sorted({r["sleep_date"] for r in hr_readings}), hr_readings)
+            out[user] = {"days": len(rows), "hrv_readings": len(readings), "hr_readings": len(hr_readings)}
         except Exception as exc:  # one user's failure must not abort the rest
             msg = f"error: {type(exc).__name__}: {exc}"
             # stderr -> Cloud Logging records it at ERROR severity, so log-based
