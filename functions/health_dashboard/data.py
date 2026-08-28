@@ -197,6 +197,31 @@ def load_bp_window(user_id: str, start_ts, end_ts) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=CACHE_TTL_S)
+def load_intensity_sleep(user_id: str) -> pd.DataFrame:
+    """Intensity × Sleep view: one row per (day, following night).
+
+    The self-join pairs each day's intensity minutes with the deep-sleep
+    latency of the night that FOLLOWED it — Garmin attributes a night's sleep
+    to the next morning's calendar date, so the night after activity day D
+    lives on row D+1. Rows drop out when either side is missing (day with no
+    summary, night with no stage data or that never reached deep sleep).
+    """
+    return _query_params(f"""
+        SELECT d.date AS activity_date,
+               d.moderate_intensity_minutes,
+               d.vigorous_intensity_minutes,
+               n.deep_sleep_latency_seconds
+        FROM `{DATASET}.garmin_daily` d
+        JOIN `{DATASET}.garmin_daily` n
+          ON n.user_id = d.user_id AND n.date = DATE_ADD(d.date, INTERVAL 1 DAY)
+        WHERE d.user_id = @user_id
+          AND d.moderate_intensity_minutes IS NOT NULL
+          AND n.deep_sleep_latency_seconds IS NOT NULL
+        ORDER BY d.date
+    """, [_user_param(user_id)])
+
+
+@st.cache_data(ttl=CACHE_TTL_S)
 def load_hrv_for_sleep_date(user_id: str, sleep_date: str) -> pd.DataFrame:
     """Overnight HRV datapoints for one Garmin sleep_date (the table's
     partition column, so this is a partition-pruned lookup, not a ts scan —

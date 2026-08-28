@@ -392,6 +392,40 @@ def paired_hrv_overlay_fig(hrv_a: pd.DataFrame, hrv_b: pd.DataFrame,
     return fig
 
 
+def latency_distribution_fig(active: pd.Series, rest: pd.Series,
+                             threshold: int) -> go.Figure:
+    """Intensity × Sleep view: the two groups' deep-sleep-latency
+    distributions overlaid as semi-transparent histograms (orange = active
+    days, matching the activity hue used everywhere else; violet = rest
+    days), with a dashed mean line per group. A shared 5-minute bin size is
+    forced on both traces — Plotly would otherwise bin each independently and
+    the bars wouldn't be comparable.
+    """
+    fig = go.Figure()
+    bins = dict(size=5, start=0)
+    for values, label, color in [
+            (rest, f"< {threshold} intensity min", VIOLET),
+            (active, f"≥ {threshold} intensity min", ORANGE)]:
+        if values.empty:
+            continue
+        fig.add_trace(go.Histogram(
+            x=values, name=label, xbins=bins,
+            marker=dict(color=color), opacity=0.6,
+            hovertemplate="%{y} nights at %{x} min<extra>" + label + "</extra>"))
+        fig.add_vline(x=float(values.mean()),
+                      line=dict(color=color, width=2, dash="dash"),
+                      annotation_text=f"mean {values.mean():.0f}",
+                      annotation_position="top",
+                      annotation_font=dict(color=color, size=11))
+
+    fig = _layout(fig, height=380)
+    fig.update_layout(barmode="overlay", showlegend=True)
+    fig.update_xaxes(title_text="minutes from sleep onset to deep sleep",
+                     title_font=dict(color=MUTED))
+    fig.update_yaxes(title_text="nights", title_font=dict(color=MUTED))
+    return fig
+
+
 def _bar_width_ms(ts: pd.Series, cap_ms: float = 15 * 60 * 1000) -> float:
     """Median spacing between consecutive readings, in milliseconds, used as
     a bar trace's width on a datetime x-axis. Median (not the auto-width

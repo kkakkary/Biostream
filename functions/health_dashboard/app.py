@@ -227,6 +227,73 @@ def _overnight_hrv_section(user_id: str, meal_ts):
         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
 
+def _intensity_sleep_view(user_id: str):
+    """Intensity × Sleep view: split days by intensity minutes, compare the
+    following nights' deep-sleep latency distributions, Welch's t-test.
+
+    The pairing direction matters and is handled in data.load_intensity_sleep:
+    Garmin books a night's sleep under the NEXT morning's date, so the night
+    that follows activity day D is row D+1 — the join, not this function,
+    encodes that.
+    """
+    threshold = experiment.INTENSITY_THRESHOLD_MIN
+    st.caption(
+        "Does an active day get you into deep sleep faster? Each night is "
+        "paired with the day **before** it and grouped by that day's Garmin "
+        f"intensity minutes (moderate + 2×vigorous): ≥ {threshold} min = "
+        f"active day, < {threshold} = rest day. Latency is minutes from "
+        "sleep onset to the first deep-sleep stage."
+    )
+    df = data.load_intensity_sleep(user_id)
+    if df.empty:
+        st.info("No paired day/night data yet for this subject — this view needs "
+                "days with intensity minutes followed by nights with sleep-stage "
+                "data (backfilled or synced after the stage pipeline was added).")
+        return
+
+    active, rest = experiment.split_latency_by_intensity(df, threshold)
+    result = experiment.welch_t_test(active, rest)
+
+    with st.container(border=True):
+        st.subheader("😴 Time to Deep Sleep — Distributions")
+        fig = charts.latency_distribution_fig(active, rest, threshold)
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+    with st.container(border=True):
+        st.subheader("Welch's t-test")
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric(f"Active nights (≥ {threshold})", result["n_a"], border=True,
+                  help="Nights following a day at or above the intensity threshold.")
+        c2.metric("Active mean (min)", _stat(result["mean_a"], "{:.1f}"), border=True,
+                  help=None if result["sd_a"] is None else f"SD: {result['sd_a']:.1f} min")
+        c3.metric(f"Rest nights (< {threshold})", result["n_b"], border=True,
+                  help="Nights following a day below the intensity threshold.")
+        c4.metric("Rest mean (min)", _stat(result["mean_b"], "{:.1f}"), border=True,
+                  help=None if result["sd_b"] is None else f"SD: {result['sd_b']:.1f} min")
+        c5.metric("t statistic", _stat(result["t_stat"], "{:.2f}"), border=True,
+                  help="Welch's two-sample t (unequal variances). Negative = "
+                       "active nights reached deep sleep faster on average.")
+        c6.metric("p-value", _stat(result["p_value"], "{:.3f}"), border=True,
+                  help="Probability of a mean difference at least this large "
+                       "if activity made no difference at all.")
+
+        if result["p_value"] is None:
+            st.caption(f"Not enough nights on both sides to run the test (needs at "
+                       f"least 2 each; have {result['n_a']} active, {result['n_b']} rest).")
+        else:
+            delta = result["mean_a"] - result["mean_b"]
+            direction = "faster" if delta < 0 else "slower"
+            verdict = ("statistically significant" if result["p_value"] < 0.05
+                       else "not statistically significant")
+            st.caption(f"Nights after active days reached deep sleep "
+                       f"{abs(delta):.1f} min {direction} on average — "
+                       f"**{verdict}** at α = 0.05 (p = {result['p_value']:.3f}).")
+        st.caption("Caveats: observational, not randomized — active days may "
+                   "differ in more than exercise (caffeine, stress, timing). "
+                   "Nights with no sleep-stage data, and nights that never "
+                   "reached deep sleep, are excluded.")
+
+
 @st.fragment
 def _paired_experiment(user_id: str, meal_a, meal_b, acts_a, acts_b):
     """Paired Meal Experiment: the slider and everything it drives.
@@ -327,19 +394,27 @@ if not auth.gate(user_id):
 
 # The view toggle. segmented_control returns None until first clicked,
 # hence the `or "Single Meal"` fallback.
-view = st.segmented_control("View", options=["Single Meal", "Paired Meal Experiment"],
+view = st.segmented_control("View",
+                            options=["Single Meal", "Paired Meal Experiment",
+                                     "Intensity × Sleep"],
                             default="Single Meal", label_visibility="collapsed") or "Single Meal"
 
-# Every load_* call below takes user_id, so switching subjects re-keys the
-# cache and re-queries rather than reusing the previous subject's frames.
-meals = data.load_meals(user_id)
-if meals.empty:
-    st.info(f"No meals logged yet for {user_id.title()}.")
-    st.stop()   # halts the script — nothing below renders
-# Add a _label column (the dropdown text) by applying _meal_label to each row.
-meals = meals.assign(_label=meals.apply(_meal_label, axis=1))
+# Meals are only loaded for the meal-anchored views — Intensity × Sleep runs
+# on Garmin daily data alone, so a subject with no logged meals still gets it.
+if view != "Intensity × Sleep":
+    # Every load_* call below takes user_id, so switching subjects re-keys the
+    # cache and re-queries rather than reusing the previous subject's frames.
+    meals = data.load_meals(user_id)
+    if meals.empty:
+        st.info(f"No meals logged yet for {user_id.title()}.")
+        st.stop()   # halts the script — nothing below renders
+    # Add a _label column (the dropdown text) by applying _meal_label to each row.
+    meals = meals.assign(_label=meals.apply(_meal_label, axis=1))
 
-if view == "Single Meal":
+if view == "Intensity × Sleep":
+    _intensity_sleep_view(user_id)
+
+elif view == "Single Meal":
     selected_label = st.selectbox("Meal", meals["_label"])
     # Find the row whose label was picked (labels are unique per meal).
     meal = meals[meals["_label"] == selected_label].iloc[0]
@@ -398,7 +473,7 @@ if view == "Single Meal":
 
     _overnight_hrv_section(user_id, meal_ts)
 
-else:  # Paired Meal Experiment
+elif view == "Paired Meal Experiment":
     st.caption(
         "Pick any two meals to compare — e.g. the same dinner with and without "
         "a post-meal walk. **Meal B is the exercise arm**, Meal A the control. "
