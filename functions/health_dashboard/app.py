@@ -57,11 +57,36 @@ LOGO_PATH = Path(__file__).parent / "assets" / "moai_logo.png"
 st.set_page_config(page_title="Biostream — Post-Prandial", page_icon=Image.open(LOGO_PATH),
                    layout="wide", initial_sidebar_state="collapsed")
 
-# Small CSS override — Streamlit has no theme knob for these two colors.
+# Small CSS override, layered on top of .streamlit/config.toml's theme keys
+# (which handle font families, base colors, radius, and borders — see that
+# file's comment for the type system this draws from). What's left here is
+# what the theme API has no knob for:
+#   - metric values in the monospace face, so glucose/latency/p-value
+#     readouts look like instrument output, not prose
+#   - a thin signal-colored cap on every metric tile, turning each into a
+#     small readout module instead of a bare number
+#   - dividers in the brand violet instead of Streamlit's default grey line
 st.markdown("""
 <style>
 h3 { color: #35126A; }
-[data-testid="stMetricValue"] { color: #151022; }
+[data-testid="stMetricValue"] {
+    color: #151022;
+    font-family: "IBM Plex Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+}
+[data-testid="stMetricLabel"] {
+    letter-spacing: 0.02em;
+}
+[data-testid="stMetric"] {
+    border-top: 3px solid #6b3fc9;
+    padding-top: 0.6rem;
+}
+hr {
+    background: linear-gradient(90deg, #35126A, transparent);
+    height: 2px;
+    border: none;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -456,13 +481,17 @@ elif view == "Single Meal":
         # never came back down), hence the "—" fallback on each.
         # Units live in the labels (matching the macro row on the meal card),
         # so the values stay bare numbers and the row scans as one set.
-        s1, s2, s3, s4, s5 = st.columns(5)
+        # Two rows of 3/2, not one of 5 — five-across left "Return to
+        # baseline (min)" and "Incremental AUC (mg/dL·min)" clipped mid-word
+        # at normal window widths.
+        s1, s2, s3 = st.columns(3)
         s1.metric("Baseline (mg/dL)", _stat(stats["baseline_mg_dl"]), border=True,
                   help=f"Mean glucose in the {BASELINE_WINDOW_MIN} minutes before the meal.")
         s2.metric("Peak (mg/dL)", _stat(stats["peak_mg_dl"]), border=True,
                   help="Highest reading after the meal.")
         s3.metric("Time to peak (min)", _stat(stats["time_to_peak_min"]), border=True,
                   help="Minutes from the meal to that peak.")
+        s4, s5 = st.columns(2)
         s4.metric("Return to baseline (min)", _stat(stats["time_to_baseline_min"]), border=True,
                   help="Minutes until glucose fell back to baseline. “—” means it "
                        f"hadn't within {SINGLE_MEAL_POST_HOURS} hours of the meal.")
