@@ -24,6 +24,7 @@ from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
+from scipy import stats as scipy_stats
 
 DEFAULT_BASELINE_WINDOW_MIN = 30
 DEFAULT_POST_MEAL_HOURS = 15  # meal through ~next-morning
@@ -305,6 +306,67 @@ HRV_STAT_LABELS = {
     "max5_hrv": "Highest 5-min. HRV",
     "min5_hrv": "Lowest 5-min. HRV",
 }
+
+
+# --------------------------------------------------------------------------- #
+# Intensity × Sleep view: does an active day speed up reaching deep sleep?
+# --------------------------------------------------------------------------- #
+
+# The grouping threshold: a day earning MORE than this many Garmin intensity
+# minutes counts as an "active day" (strict >, not >=). Raised from the
+# public-health target of 20/day — a threshold sweep across this pipeline's
+# subjects (see PR discussion) showed the 20/day cut mostly split noise from
+# noise (most days cluster near zero minutes); the signal, such as it is,
+# only shows up comparing genuinely hard days (60+ min) against the rest.
+INTENSITY_THRESHOLD_MIN = 45
+
+
+def garmin_intensity_minutes(df: pd.DataFrame) -> pd.Series:
+    """Garmin-convention intensity minutes for each day: moderate + 2×vigorous
+    (Garmin credits each vigorous minute as two toward its weekly goal).
+    fillna(0): a day with a summary but e.g. no vigorous minutes means zero
+    earned, not unknown."""
+    return (df["moderate_intensity_minutes"].fillna(0)
+            + 2 * df["vigorous_intensity_minutes"].fillna(0))
+
+
+def split_latency_by_intensity(df: pd.DataFrame,
+                               threshold: int = INTENSITY_THRESHOLD_MIN
+                               ) -> tuple[pd.Series, pd.Series]:
+    """Split the paired day/night rows (see data.load_intensity_sleep) into
+    (active_days, rest_days) — each a Series of that night's deep-sleep
+    latency in MINUTES, grouped by whether the preceding day earned MORE
+    THAN `threshold` intensity minutes (strict >, so a day at exactly the
+    threshold is a rest day)."""
+    latency_min = df["deep_sleep_latency_seconds"].astype(float) / 60
+    intensity = garmin_intensity_minutes(df)
+    return latency_min[intensity > threshold], latency_min[intensity <= threshold]
+
+
+def welch_t_test(a: pd.Series, b: pd.Series) -> dict:
+    """Welch's two-sample t-test (unequal variances) comparing group means,
+    plus the per-group descriptives the view shows alongside it. Welch over
+    Student's because nothing guarantees the two groups spread equally —
+    it's the safe default and costs nothing when variances happen to match.
+
+    Needs at least 2 values per side to estimate variances; below that the
+    test fields come back None and the ns still report what data exists.
+    """
+    a, b = pd.Series(a).dropna(), pd.Series(b).dropna()
+    out = {
+        "n_a": len(a), "n_b": len(b),
+        "mean_a": float(a.mean()) if len(a) else None,
+        "mean_b": float(b.mean()) if len(b) else None,
+        # ddof=1 = sample (not population) standard deviation; needs n >= 2.
+        "sd_a": float(a.std(ddof=1)) if len(a) >= 2 else None,
+        "sd_b": float(b.std(ddof=1)) if len(b) >= 2 else None,
+        "t_stat": None, "p_value": None,
+    }
+    if len(a) >= 2 and len(b) >= 2:
+        result = scipy_stats.ttest_ind(a, b, equal_var=False)
+        out["t_stat"] = float(result.statistic)
+        out["p_value"] = float(result.pvalue)
+    return out
 
 
 def compare_meal_stats(stats_a: dict, stats_b: dict,

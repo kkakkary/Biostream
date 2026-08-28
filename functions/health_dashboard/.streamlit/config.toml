@@ -1,11 +1,31 @@
 # MOAI brand theme: deep purple accent on the logo's own off-white background.
+#
+# Typography takes its cue from the wordmark itself (assets/moai_logo.png) —
+# a bold condensed grotesk wrapped in octopus tentacles. Section headers use
+# that same condensed-bold energy (Big Shoulders Display); body copy moves to
+# IBM Plex Sans, a technical face built for dense data products; numeric
+# readouts (see the metric-value rule in app.py) use its monospace sibling,
+# so glucose/latency/p-value figures read like instrument output rather than
+# prose. All three load through Streamlit's own font/headingFont/codeFont
+# keys — no manual <link> injection needed.
 [theme]
 base = "light"
 primaryColor = "#35126A"
 backgroundColor = "#f2f1ef"
-secondaryBackgroundColor = "#e7e4de"
+secondaryBackgroundColor = "#e8e3ee"
 textColor = "#151022"
-font = "sans serif"
+borderColor = "#d6cfe0"
+violetColor = "#6b3fc9"
+linkColor = "#6b3fc9"
+codeTextColor = "#151022"
+codeBackgroundColor = "#e8e3ee"
+dataframeBorderColor = "#d6cfe0"
+showWidgetBorder = true
+baseRadius = "4px"
+buttonRadius = "4px"
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+headingFont = "Big Shoulders Display:https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&display=swap"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
 
 [server]
 enableXsrfProtection = true

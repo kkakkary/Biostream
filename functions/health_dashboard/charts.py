@@ -21,13 +21,16 @@ import plotly.graph_objects as go
 from transforms import GLUCOSE_RANGE_MG_DL, break_time_gaps, fill_date_gaps
 
 # --- House style constants (used by every chart) ----------------------------
-SURFACE = "#f2f1ef"   # chart background
-GRID = "#e3e0e6"
-AXIS = "#c7c2cc"
-INK = "#151022"       # darkest text
+# Neutrals carry a slight violet bias (see .streamlit/config.toml) rather than
+# flat grey, so a chart dropped onto the app's surface reads as one system
+# instead of a library default sitting on a branded background.
+SURFACE = "#f2f1ef"   # chart background — matches theme.backgroundColor
+GRID = "#e6e0ec"
+AXIS = "#c9c0d6"
+INK = "#151022"       # darkest text — matches theme.textColor
 INK_2 = "#4a4356"
-MUTED = "#8b8593"     # secondary text (axis labels, annotations)
-BAND = "#eae8ec"  # neutral wash for reference ranges
+MUTED = "#8c84a0"     # secondary text (axis labels, annotations)
+BAND = "#ece6f0"  # neutral wash for reference ranges
 
 # One entity = one hue, consistently across every chart on the page.
 BLUE = "#2a78d6"     # glucose
@@ -38,7 +41,9 @@ YELLOW = "#eda100"   # stress
 GREEN = "#008300"    # body battery / diastolic
 SLEEP_RAMP = {"Deep": "#0b5d0b", "REM": "#2f9e2f", "Light": "#7cc47c"}
 
-FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+# Matches theme.font in .streamlit/config.toml — a chart's type has to match
+# the page's, or the two read as two different products stacked together.
+FONT = '"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif'
 
 
 def _layout(fig: go.Figure, height: int = 320, top: int = 8) -> go.Figure:
@@ -389,6 +394,40 @@ def paired_hrv_overlay_fig(hrv_a: pd.DataFrame, hrv_b: pd.DataFrame,
     fig.update_layout(showlegend=True)
     fig.update_xaxes(title_text="minutes since sleep start", title_font=dict(color=MUTED))
     fig.update_yaxes(title_text="HRV (ms)", title_font=dict(color=MUTED))
+    return fig
+
+
+def latency_distribution_fig(active: pd.Series, rest: pd.Series,
+                             threshold: int) -> go.Figure:
+    """Intensity × Sleep view: the two groups' deep-sleep-latency
+    distributions overlaid as semi-transparent histograms (orange = active
+    days, matching the activity hue used everywhere else; violet = rest
+    days), with a dashed mean line per group. A shared 5-minute bin size is
+    forced on both traces — Plotly would otherwise bin each independently and
+    the bars wouldn't be comparable.
+    """
+    fig = go.Figure()
+    bins = dict(size=5, start=0)
+    for values, label, color in [
+            (rest, f"≤ {threshold} intensity min", VIOLET),
+            (active, f"> {threshold} intensity min", ORANGE)]:
+        if values.empty:
+            continue
+        fig.add_trace(go.Histogram(
+            x=values, name=label, xbins=bins,
+            marker=dict(color=color), opacity=0.6,
+            hovertemplate="%{y} nights at %{x} min<extra>" + label + "</extra>"))
+        fig.add_vline(x=float(values.mean()),
+                      line=dict(color=color, width=2, dash="dash"),
+                      annotation_text=f"mean {values.mean():.0f}",
+                      annotation_position="top",
+                      annotation_font=dict(color=color, size=11))
+
+    fig = _layout(fig, height=380)
+    fig.update_layout(barmode="overlay", showlegend=True)
+    fig.update_xaxes(title_text="minutes from sleep onset to deep sleep",
+                     title_font=dict(color=MUTED))
+    fig.update_yaxes(title_text="nights", title_font=dict(color=MUTED))
     return fig
 
 
