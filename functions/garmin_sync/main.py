@@ -37,6 +37,8 @@ import functions_framework                       # Google's library that turns a
 from garminconnect import Garmin                 # third-party client for Garmin's (unofficial) API
 from google.cloud import bigquery, secretmanager # Google Cloud client libraries
 
+from sleep_latency import deep_sleep_latency_seconds  # local module, shared with the backfill script
+
 # --- Configuration, read once when the function "cold starts" ---------------
 # os.environ["PROJECT"] crashes if PROJECT isn't set (deliberate: fail fast on
 # a misconfigured deploy). os.environ.get(name, default) is the soft version:
@@ -198,7 +200,8 @@ def _hr_readings(user: str, date: str, sleep: dict, hr: dict) -> list[dict]:
     return out
 
 
-def _row(user: str, date: str, g: Garmin, hrv: dict, sleep: dict) -> dict | None:
+def _row(user: str, date: str, g: Garmin, hrv: dict, sleep: dict,
+         sleep_levels: list) -> dict | None:
     """Build the single garmin_daily row for one (user, date).
 
     Makes two Garmin API calls (summary, body composition — HRV and sleep
@@ -221,6 +224,10 @@ def _row(user: str, date: str, g: Garmin, hrv: dict, sleep: dict) -> dict | None
         "sleep_seconds": _int(us.get("sleepingSeconds")),
         "deep_sleep_seconds": _int(sleep.get("deepSleepSeconds")),
         "rem_sleep_seconds": _int(sleep.get("remSleepSeconds")),
+        # Night ending the morning of `date` (Garmin's sleep-date convention).
+        "deep_sleep_latency_seconds": deep_sleep_latency_seconds(sleep, sleep_levels),
+        "moderate_intensity_minutes": _int(us.get("moderateIntensityMinutes")),
+        "vigorous_intensity_minutes": _int(us.get("vigorousIntensityMinutes")),
         "hrv_avg": _int(hrv_sum.get("lastNightAvg")),
         "total_kcal": _int(us.get("totalKilocalories")),
         "active_kcal": _int(us.get("activeKilocalories")),
@@ -229,7 +236,8 @@ def _row(user: str, date: str, g: Garmin, hrv: dict, sleep: dict) -> dict | None
         "medications": [],
         # Full raw API payloads kept alongside the parsed columns, so if we
         # ever want a field we didn't extract, it's already in the warehouse.
-        "raw": {"user_summary": us, "sleep": sleep, "hrv": hrv, "body_composition": bc},
+        "raw": {"user_summary": us, "sleep": sleep, "sleep_levels": sleep_levels,
+                "hrv": hrv, "body_composition": bc},
     }
     # Skip days with no meaningful data (watch not worn, not yet synced).
     # weight_lbs counts: a standalone weigh-in is worth a row on its own.
@@ -334,9 +342,11 @@ def garmin_sync(request):
             rows, readings, hr_readings = [], [], []
             for d in dates:
                 hrv = _safe(lambda: g.get_hrv_data(d)) or {}
-                sleep = (_safe(lambda: g.get_sleep_data(d)) or {}).get("dailySleepDTO") or {}
+                sleep_data = _safe(lambda: g.get_sleep_data(d)) or {}
+                sleep = sleep_data.get("dailySleepDTO") or {}
+                sleep_levels = sleep_data.get("sleepLevels") or []
                 hr = _safe(lambda: g.get_heart_rates(d)) or {}
-                r = _row(user, d, g, hrv, sleep)
+                r = _row(user, d, g, hrv, sleep, sleep_levels)
                 if r is not None:
                     rows.append(r)
                 readings.extend(_hrv_readings(user, d, hrv))
