@@ -330,6 +330,13 @@ def garmin_intensity_minutes(df: pd.DataFrame) -> pd.Series:
             + 2 * df["vigorous_intensity_minutes"].fillna(0))
 
 
+def deep_sleep_latency_minutes(df: pd.DataFrame) -> pd.Series:
+    """The paired frame's latency column (stored in seconds) as minutes —
+    the one place that conversion happens, shared by every consumer below
+    so it can't drift out of sync between them."""
+    return df["deep_sleep_latency_seconds"].astype(float) / 60
+
+
 def split_latency_by_intensity(df: pd.DataFrame,
                                threshold: int = INTENSITY_THRESHOLD_MIN
                                ) -> tuple[pd.Series, pd.Series]:
@@ -338,7 +345,7 @@ def split_latency_by_intensity(df: pd.DataFrame,
     latency in MINUTES, grouped by whether the preceding day earned MORE
     THAN `threshold` intensity minutes (strict >, so a day at exactly the
     threshold is a rest day)."""
-    latency_min = df["deep_sleep_latency_seconds"].astype(float) / 60
+    latency_min = deep_sleep_latency_minutes(df)
     intensity = garmin_intensity_minutes(df)
     return latency_min[intensity > threshold], latency_min[intensity <= threshold]
 
@@ -385,16 +392,20 @@ def intensity_latency_spearman(df: pd.DataFrame) -> dict:
     on where a threshold slider happens to sit.
 
     Needs at least 3 pairs for scipy to return a meaningful statistic;
-    below that rho/p come back None.
+    below that (or when one side is constant — e.g. every day in the
+    window earned the same intensity, which scipy can't correlate against
+    anything and returns NaN for) rho/p come back None rather than a NaN
+    that would silently read as p < 0.05 is False, i.e. "not significant".
     """
     intensity = garmin_intensity_minutes(df)
-    latency_min = df["deep_sleep_latency_seconds"].astype(float) / 60
+    latency_min = deep_sleep_latency_minutes(df)
     n = len(df)
     out = {"n": n, "rho": None, "p_value": None}
     if n >= 3:
         result = scipy_stats.spearmanr(intensity, latency_min)
-        out["rho"] = float(result.statistic)
-        out["p_value"] = float(result.pvalue)
+        if not np.isnan(result.pvalue):
+            out["rho"] = float(result.statistic)
+            out["p_value"] = float(result.pvalue)
     return out
 
 

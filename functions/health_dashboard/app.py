@@ -344,7 +344,7 @@ def _intensity_sleep_view(user_id: str):
                    "slider above happens to sit.")
         fig = charts.intensity_latency_scatter_fig(
             experiment.garmin_intensity_minutes(df),
-            df["deep_sleep_latency_seconds"].astype(float) / 60,
+            experiment.deep_sleep_latency_minutes(df),
             df["activity_date"])
         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 

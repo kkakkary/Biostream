@@ -105,6 +105,19 @@ def test_spearman_partial_correlation_matches_scipy():
     assert result["p_value"] == pytest.approx(0.6227871720116619)
 
 
+def test_spearman_constant_intensity_is_none_not_nan():
+    """Regression test: when every night's intensity is identical, scipy's
+    correlation is mathematically undefined and returns NaN — which must
+    surface as None (rho/p unknown), not as a NaN that a naive `p < 0.05`
+    check would silently read as False, i.e. "not statistically
+    significant" — a wrong, definitive-looking claim to show a user."""
+    df = _frame([(10, 0, 600), (10, 0, 1200), (10, 0, 300)])
+    result = experiment.intensity_latency_spearman(df)
+    assert result["n"] == 3
+    assert result["rho"] is None
+    assert result["p_value"] is None
+
+
 def test_spearman_needs_at_least_three_nights():
     """Below scipy's minimum for a meaningful statistic -> n reported, no
     fabricated rho/p."""
