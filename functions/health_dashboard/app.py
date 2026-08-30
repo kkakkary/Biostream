@@ -261,13 +261,12 @@ def _intensity_sleep_view(user_id: str):
     that follows activity day D is row D+1 — the join, not this function,
     encodes that.
     """
-    threshold = experiment.INTENSITY_THRESHOLD_MIN
     st.caption(
         "Does an active day get you into deep sleep faster? Each night is "
         "paired with the day **before** it and grouped by that day's Garmin "
-        f"intensity minutes (moderate + 2×vigorous): > {threshold} min = "
-        f"active day, ≤ {threshold} = rest day. Latency is minutes from "
-        "sleep onset to the first deep-sleep stage."
+        "intensity minutes (moderate + 2×vigorous) against the threshold "
+        "below. Latency is minutes from sleep onset to the first deep-sleep "
+        "stage."
     )
     df = data.load_intensity_sleep(user_id)
     if df.empty:
@@ -276,8 +275,24 @@ def _intensity_sleep_view(user_id: str):
                 "data (backfilled or synced after the stage pipeline was added).")
         return
 
+    threshold = st.slider("Intensity threshold (minutes)", min_value=0, max_value=120,
+                          value=experiment.INTENSITY_THRESHOLD_MIN, step=5,
+                          help="A night counts as following an active day when that "
+                               "day's Garmin intensity minutes exceed this value; "
+                               "otherwise it's an inactive-day night.")
+    st.caption(f"> {threshold} min = active day, ≤ {threshold} = inactive day.")
+
     active, rest = experiment.split_latency_by_intensity(df, threshold)
     result = experiment.welch_t_test(active, rest)
+
+    o1, o2, o3 = st.columns(3)
+    o1.metric("Total nights", len(df), border=True,
+              help="Paired day/night rows this subject has: a day with intensity "
+                   "minutes followed by a night with deep-sleep-latency data.")
+    o2.metric("Active nights", result["n_a"], border=True,
+              help=f"Nights following a day with > {threshold} intensity minutes.")
+    o3.metric("Inactive nights", result["n_b"], border=True,
+              help=f"Nights following a day with ≤ {threshold} intensity minutes.")
 
     with st.container(border=True):
         st.subheader("😴 Time to Deep Sleep — Distributions")
@@ -286,28 +301,23 @@ def _intensity_sleep_view(user_id: str):
 
     with st.container(border=True):
         st.subheader("Welch's t-test")
-        # Two rows of 3, not one of 6 — six-across left labels like "Rest
-        # nights (≤ 45)" clipped mid-word at normal window widths.
-        c1, c2, c3 = st.columns(3)
-        c1.metric(f"Active nights (> {threshold})", result["n_a"], border=True,
-                  help="Nights following a day above the intensity threshold.")
-        c2.metric("Active mean (min)", _stat(result["mean_a"], "{:.1f}"), border=True,
+        # Counts already shown in the overview row above — this grid is just
+        # the test's own numbers, so 4-across fits without clipping.
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Active mean (min)", _stat(result["mean_a"], "{:.1f}"), border=True,
                   help=None if result["sd_a"] is None else f"SD: {result['sd_a']:.1f} min")
-        c3.metric(f"Rest nights (≤ {threshold})", result["n_b"], border=True,
-                  help="Nights following a day at or below the intensity threshold.")
-        c4, c5, c6 = st.columns(3)
-        c4.metric("Rest mean (min)", _stat(result["mean_b"], "{:.1f}"), border=True,
+        c2.metric("Inactive mean (min)", _stat(result["mean_b"], "{:.1f}"), border=True,
                   help=None if result["sd_b"] is None else f"SD: {result['sd_b']:.1f} min")
-        c5.metric("t statistic", _stat(result["t_stat"], "{:.2f}"), border=True,
+        c3.metric("t statistic", _stat(result["t_stat"], "{:.2f}"), border=True,
                   help="Welch's two-sample t (unequal variances). Negative = "
                        "active nights reached deep sleep faster on average.")
-        c6.metric("p-value", _stat(result["p_value"], "{:.3f}"), border=True,
+        c4.metric("p-value", _stat(result["p_value"], "{:.3f}"), border=True,
                   help="Probability of a mean difference at least this large "
                        "if activity made no difference at all.")
 
         if result["p_value"] is None:
             st.caption(f"Not enough nights on both sides to run the test (needs at "
-                       f"least 2 each; have {result['n_a']} active, {result['n_b']} rest).")
+                       f"least 2 each; have {result['n_a']} active, {result['n_b']} inactive).")
         else:
             delta = result["mean_a"] - result["mean_b"]
             direction = "faster" if delta < 0 else "slower"
