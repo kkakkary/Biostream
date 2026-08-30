@@ -369,6 +369,35 @@ def welch_t_test(a: pd.Series, b: pd.Series) -> dict:
     return out
 
 
+def intensity_latency_spearman(df: pd.DataFrame) -> dict:
+    """Spearman rank correlation between a day's intensity minutes and the
+    following night's deep-sleep latency, over EVERY paired night — no
+    threshold, no split.
+
+    Complements welch_t_test rather than replacing it: dichotomizing at a
+    threshold throws away where a night falls within each side (a 44-minute
+    day and a 2-minute day both just become "inactive"), and a t-test on the
+    resulting two groups is a mean comparison, which this pipeline's latency
+    values are a bad fit for — right-skewed 1.8-3.2 with a handful of long-
+    latency nights that can drag a group mean around. Spearman uses every
+    night's rank instead of its raw value, so one outlier night can't
+    dominate the result the way it can in a mean, and nothing here depends
+    on where a threshold slider happens to sit.
+
+    Needs at least 3 pairs for scipy to return a meaningful statistic;
+    below that rho/p come back None.
+    """
+    intensity = garmin_intensity_minutes(df)
+    latency_min = df["deep_sleep_latency_seconds"].astype(float) / 60
+    n = len(df)
+    out = {"n": n, "rho": None, "p_value": None}
+    if n >= 3:
+        result = scipy_stats.spearmanr(intensity, latency_min)
+        out["rho"] = float(result.statistic)
+        out["p_value"] = float(result.pvalue)
+    return out
+
+
 def compare_meal_stats(stats_a: dict, stats_b: dict,
                        label_a: str = "Meal A", label_b: str = "Meal B",
                        stat_labels: dict = STAT_LABELS) -> pd.DataFrame:

@@ -331,6 +331,42 @@ def _intensity_sleep_view(user_id: str):
                    "Nights with no sleep-stage data, and nights that never "
                    "reached deep sleep, are excluded.")
 
+    # Threshold-independent complement to the split above: every night as one
+    # point, correlated by rank rather than compared as two group means. See
+    # experiment.intensity_latency_spearman for why this is the more robust
+    # read when latency is this skewed and a sample this small.
+    spearman = experiment.intensity_latency_spearman(df)
+    with st.container(border=True):
+        st.subheader("📈 Intensity vs. Latency — Correlation")
+        st.caption("Every paired night, no threshold: does a MORE active day "
+                   "correspond to a FASTER night, in rank rather than raw minutes? "
+                   "Spearman's ρ answers that without depending on where the "
+                   "slider above happens to sit.")
+        fig = charts.intensity_latency_scatter_fig(
+            experiment.garmin_intensity_minutes(df),
+            df["deep_sleep_latency_seconds"].astype(float) / 60,
+            df["activity_date"])
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Nights (n)", spearman["n"], border=True,
+                  help="Every paired night, regardless of the threshold above.")
+        r2.metric("Spearman ρ", _stat(spearman["rho"], "{:+.2f}"), border=True,
+                  help="-1 to +1. Negative = more active days tend to precede "
+                       "faster nights. 0 = no rank relationship.")
+        r3.metric("p-value", _stat(spearman["p_value"], "{:.3f}"), border=True,
+                  help="Probability of a correlation this strong if activity "
+                       "and latency were actually unrelated.")
+
+        if spearman["p_value"] is None:
+            st.caption(f"Not enough nights to test a correlation (needs at "
+                       f"least 3; have {spearman['n']}).")
+        else:
+            verdict = ("statistically significant" if spearman["p_value"] < 0.05
+                       else "not statistically significant")
+            st.caption(f"**{verdict}** at α = 0.05 (ρ = {spearman['rho']:+.2f}, "
+                       f"p = {spearman['p_value']:.3f}).")
+
 
 @st.fragment
 def _paired_experiment(user_id: str, meal_a, meal_b, acts_a, acts_b):

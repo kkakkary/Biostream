@@ -83,6 +83,50 @@ def test_welch_t_test_drops_nans_before_counting():
     assert result["n_a"] == 2 and result["p_value"] is not None
 
 
+def test_spearman_perfect_negative_correlation():
+    """More intensity, monotonically faster latency, every night -> rho = -1
+    exactly, regardless of the actual minute gaps between nights."""
+    df = _frame([(10, 0, 40 * 60), (20, 0, 30 * 60),
+                (30, 0, 20 * 60), (40, 0, 10 * 60)])
+    result = experiment.intensity_latency_spearman(df)
+    assert result["n"] == 4
+    assert result["rho"] == pytest.approx(-1.0)
+    assert result["p_value"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_spearman_partial_correlation_matches_scipy():
+    """A non-monotonic relationship: known rho/p, hand-verified against
+    scipy.stats.spearmanr directly (not just re-deriving the same call)."""
+    df = _frame([(10, 0, 15 * 60), (20, 0, 25 * 60), (30, 0, 10 * 60),
+                (40, 0, 30 * 60), (50, 0, 20 * 60), (60, 0, 5 * 60)])
+    result = experiment.intensity_latency_spearman(df)
+    assert result["n"] == 6
+    assert result["rho"] == pytest.approx(-0.2571428571428572)
+    assert result["p_value"] == pytest.approx(0.6227871720116619)
+
+
+def test_spearman_needs_at_least_three_nights():
+    """Below scipy's minimum for a meaningful statistic -> n reported, no
+    fabricated rho/p."""
+    df = _frame([(10, 0, 600), (20, 0, 1200)])
+    result = experiment.intensity_latency_spearman(df)
+    assert result["n"] == 2
+    assert result["rho"] is None and result["p_value"] is None
+
+
+def test_intensity_latency_scatter_fig_structure():
+    fig = charts.intensity_latency_scatter_fig(
+        pd.Series([10, 20, 30]), pd.Series([40, 30, 10]),
+        pd.Series(["2026-01-01", "2026-01-02", "2026-01-03"]))
+    scatters = [t for t in fig.data if t.type == "scatter"]
+    assert len(scatters) == 1
+    assert scatters[0].mode == "markers"
+    assert list(scatters[0].x) == [10, 20, 30]
+    assert list(scatters[0].customdata) == ["2026-01-01", "2026-01-02", "2026-01-03"]
+    # Single series -> no legend, per the dataviz rule (title names the series).
+    assert fig.layout.showlegend in (None, False)
+
+
 def test_latency_distribution_fig_structure():
     """Two overlaid histograms sharing one bin size, so bars are comparable."""
     fig = charts.latency_distribution_fig(pd.Series([5.0, 10.0]),

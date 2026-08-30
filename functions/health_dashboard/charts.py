@@ -431,6 +431,32 @@ def latency_distribution_fig(active: pd.Series, rest: pd.Series,
     return fig
 
 
+def intensity_latency_scatter_fig(intensity: pd.Series, latency_min: pd.Series,
+                                  dates: pd.Series) -> go.Figure:
+    """Intensity × Sleep view: every paired night as one point — the
+    threshold-free complement to latency_distribution_fig's split. Single
+    series (one hue, no legend needed; the title names it). No trend line:
+    the accompanying statistic is Spearman's rank correlation, not a linear
+    fit, and drawing an OLS line here would visually claim a relationship
+    this chart isn't actually testing.
+    """
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=intensity, y=latency_min, mode="markers",
+        marker=dict(size=8, color=VIOLET, opacity=0.65,
+                   line=dict(color=SURFACE, width=1)),
+        customdata=dates,
+        hovertemplate="%{customdata}<br>%{x:.0f} intensity min<br>"
+                      "%{y:.0f} min to deep sleep<extra></extra>",
+    ))
+    fig = _layout(fig, height=380)
+    fig.update_xaxes(title_text="day's intensity minutes (moderate + 2×vigorous)",
+                     title_font=dict(color=MUTED))
+    fig.update_yaxes(title_text="following night: minutes to deep sleep",
+                     title_font=dict(color=MUTED))
+    return fig
+
+
 def _bar_width_ms(ts: pd.Series, cap_ms: float = 15 * 60 * 1000) -> float:
     """Median spacing between consecutive readings, in milliseconds, used as
     a bar trace's width on a datetime x-axis. Median (not the auto-width
