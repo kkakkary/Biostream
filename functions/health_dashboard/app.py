@@ -395,11 +395,17 @@ def _blood_pressure_view(user_id: str):
         return
 
     latest = df.sort_values("measurement_ts_utc").iloc[-1]
+    # delta_color="off": this is a date label riding the metric's delta slot,
+    # not a real up/down change, so it gets neutral gray text with no arrow.
+    latest_date = pd.Timestamp(latest["measurement_date"]).strftime("%b %d")
     o1, o2, o3, o4 = st.columns(4)
     o1.metric("Readings", len(df), border=True)
-    o2.metric("Latest systolic", _stat(latest["systolic"]), border=True)
-    o3.metric("Latest diastolic", _stat(latest["diastolic"]), border=True)
-    o4.metric("Latest pulse", _stat(latest["pulse"]), border=True)
+    o2.metric("Latest systolic", _stat(latest["systolic"]), delta=latest_date,
+              delta_color="off", border=True)
+    o3.metric("Latest diastolic", _stat(latest["diastolic"]), delta=latest_date,
+              delta_color="off", border=True)
+    o4.metric("Latest pulse", _stat(latest["pulse"]), delta=latest_date,
+              delta_color="off", border=True)
 
     with st.container(border=True):
         st.subheader("🩸 Blood Pressure")

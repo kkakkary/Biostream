@@ -120,7 +120,7 @@ def load_glucose(user_id: str, days: int) -> pd.DataFrame:
 @st.cache_data(ttl=CACHE_TTL_S)
 def load_blood_pressure(user_id: str, days: int) -> pd.DataFrame:
     return _query(f"""
-        SELECT measurement_ts_utc, systolic, diastolic, pulse
+        SELECT measurement_date, measurement_ts_utc, systolic, diastolic, pulse
         FROM `{DATASET}.omron_bp_daily`
         WHERE user_id = @user_id
           AND measurement_date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)

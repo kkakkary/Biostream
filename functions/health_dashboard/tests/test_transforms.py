@@ -31,6 +31,8 @@ def _glucose(values):
 
 def test_bp_daily_agg_averages_same_day_readings_and_counts_them():
     df = pd.DataFrame({
+        "measurement_date": pd.to_datetime([
+            "2026-07-18", "2026-07-18", "2026-07-19"]),
         "measurement_ts_utc": pd.to_datetime([
             "2026-07-18 07:00", "2026-07-18 20:00", "2026-07-19 07:00"]),
         "systolic": [130, 120, 118],
@@ -45,6 +47,18 @@ def test_bp_daily_agg_averages_same_day_readings_and_counts_them():
     assert day1["n_readings"] == 2
     day2 = out[out["date"] == pd.Timestamp("2026-07-19")].iloc[0]
     assert day2["n_readings"] == 1
+
+
+def test_bp_daily_agg_uses_measurement_date_not_utc_day():
+    # A late-evening local reading whose UTC timestamp has already rolled
+    # into the next day must still land on its own measurement_date.
+    df = pd.DataFrame({
+        "measurement_date": pd.to_datetime(["2026-07-18"]),
+        "measurement_ts_utc": pd.to_datetime(["2026-07-19 06:00"]),
+        "systolic": [120], "diastolic": [75], "pulse": [60],
+    })
+    out = transforms.bp_daily_agg(df)
+    assert out.iloc[0]["date"] == pd.Timestamp("2026-07-18")
 
 
 def test_sleep_stages_splits_light_as_remainder():
