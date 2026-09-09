@@ -527,3 +527,39 @@ def bp_fig(df: pd.DataFrame) -> go.Figure:
     fig.update_layout(showlegend=True)
     fig.update_yaxes(title_text="mmHg", title_font=dict(color=MUTED))
     return fig
+
+
+def bp_history_fig(daily: pd.DataFrame) -> go.Figure:
+    """One point per day (transforms.bp_daily_agg): systolic naturally plots
+    above diastolic, a thin vertical connector ties each day's pair together
+    (the gap between them is pulse pressure — a consumer-legible stand-in for
+    arterial stiffness, same cue Omron's own history view uses), and each
+    series gets its own trendline through the daily averages.
+    """
+    fig = go.Figure()
+
+    # Connector segments, one trace: [x,x,None] / [dia,sys,None] per day, so
+    # Plotly lifts the pen between days instead of bridging them.
+    cx, cy = [], []
+    for _, row in daily.iterrows():
+        cx += [row["date"], row["date"], None]
+        cy += [row["diastolic"], row["systolic"], None]
+    fig.add_trace(go.Scatter(
+        x=cx, y=cy, mode="lines", line=dict(color=MUTED, width=1.5),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+    for name, col, color in [("Systolic", "systolic", BLUE),
+                             ("Diastolic", "diastolic", GREEN)]:
+        fig.add_trace(go.Scatter(
+            x=daily["date"], y=daily[col], mode="lines+markers", name=name,
+            line=dict(color=color, width=2),
+            marker=dict(size=8, color=color, line=dict(color=SURFACE, width=2)),
+            customdata=daily["n_readings"],
+            hovertemplate="%{y:.0f} mmHg avg (n=%{customdata})<extra>" + name + "</extra>",
+        ))
+
+    fig = _layout(fig)
+    fig.update_layout(showlegend=True)
+    fig.update_yaxes(title_text="mmHg", title_font=dict(color=MUTED))
+    return fig

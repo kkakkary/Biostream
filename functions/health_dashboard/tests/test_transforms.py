@@ -29,6 +29,24 @@ def _glucose(values):
     })
 
 
+def test_bp_daily_agg_averages_same_day_readings_and_counts_them():
+    df = pd.DataFrame({
+        "measurement_ts_utc": pd.to_datetime([
+            "2026-07-18 07:00", "2026-07-18 20:00", "2026-07-19 07:00"]),
+        "systolic": [130, 120, 118],
+        "diastolic": [80, 76, 75],
+        "pulse": [60, 64, 62],
+    })
+    out = transforms.bp_daily_agg(df)
+    assert len(out) == 2
+    day1 = out[out["date"] == pd.Timestamp("2026-07-18")].iloc[0]
+    assert day1["systolic"] == 125.0
+    assert day1["diastolic"] == 78.0
+    assert day1["n_readings"] == 2
+    day2 = out[out["date"] == pd.Timestamp("2026-07-19")].iloc[0]
+    assert day2["n_readings"] == 1
+
+
 def test_sleep_stages_splits_light_as_remainder():
     daily = _daily([[date(2026, 7, 18), 3000, 51, 31, 96, 20,
                      7 * 3600, 2 * 3600, 1 * 3600, 63]])

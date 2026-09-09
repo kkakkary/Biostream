@@ -47,6 +47,24 @@ def test_bp_fig_has_one_trace_per_series():
     assert fig.layout.showlegend is True
 
 
+def test_bp_history_fig_connects_sys_and_dia_per_day():
+    daily = pd.DataFrame({
+        "date": pd.to_datetime(["2026-07-18", "2026-07-19"]),
+        "systolic": [125.0, 118.0],
+        "diastolic": [78.0, 75.0],
+        "pulse": [62.0, 62.0],
+        "n_readings": [2, 1],
+    })
+
+    fig = charts.bp_history_fig(daily)
+
+    # Connector trace first (hidden from legend), then Systolic, then Diastolic.
+    assert fig.data[0].showlegend is False
+    assert [t.name for t in fig.data[1:]] == ["Systolic", "Diastolic"]
+    # Connector visits each day's diastolic then systolic value, None-separated.
+    assert list(fig.data[0].y) == [78.0, 125.0, None, 75.0, 118.0, None]
+
+
 def test_meal_timeline_fig_marks_exercise_and_bp():
     meal_ts = pd.Timestamp("2026-07-18 19:00", tz="UTC")
     times = pd.date_range(meal_ts - pd.Timedelta(hours=1), meal_ts + pd.Timedelta(hours=3), freq="15min")

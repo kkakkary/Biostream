@@ -82,6 +82,27 @@ def fill_date_gaps(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
     return out.reset_index()
 
 
+def bp_daily_agg(df: pd.DataFrame, ts_col: str = "measurement_ts_utc") -> pd.DataFrame:
+    """Collapse blood-pressure readings to one row per calendar day.
+
+    A day with a morning and an evening reading becomes their mean, with
+    n_readings recording how many went in — a chart built on this shouldn't
+    let a day with more cuff uses silently outweigh one with fewer, and the
+    count is what lets a tooltip say so.
+    """
+    if df.empty:
+        return df.assign(date=pd.Series(dtype="datetime64[ns]"),
+                         n_readings=pd.Series(dtype="int64"))
+    day = pd.to_datetime(df[ts_col]).dt.normalize()
+    agg = (df.assign(date=day).groupby("date")
+           .agg(systolic=("systolic", "mean"),
+                diastolic=("diastolic", "mean"),
+                pulse=("pulse", "mean"),
+                n_readings=("systolic", "size"))
+           .reset_index())
+    return agg
+
+
 def kpi_row(daily: pd.DataFrame, glucose: pd.DataFrame) -> dict:
     """Headline metrics: latest value plus delta vs the mean of the prior 7 days.
 

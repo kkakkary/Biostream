@@ -48,6 +48,7 @@ import auth
 import charts
 import data
 import experiment
+import transforms
 
 # Path(__file__).parent = the directory this file lives in, so the logo is
 # found no matter where the app is launched from.
@@ -368,6 +369,47 @@ def _intensity_sleep_view(user_id: str):
                        f"p = {spearman['p_value']:.3f}).")
 
 
+def _blood_pressure_view(user_id: str):
+    """Blood Pressure view: systolic/diastolic (mmHg) over time.
+
+    Default is one point per day (transforms.bp_daily_agg) — Omron's own
+    history view does the same once you're zoomed past a few days, since a
+    subject who logs morning + evening readings would otherwise get two
+    points fighting for the same day. "Show every reading" switches to the
+    raw per-reading chart (charts.bp_fig) for a closer look.
+    """
+    st.caption(
+        "Systolic (top) and diastolic (bottom) from the Omron cuff. Same-day "
+        "readings are averaged into one point per day by default; the thin "
+        "vertical bar joining each day's pair is pulse pressure (systolic − "
+        "diastolic), a rough visual cue for arterial stiffness."
+    )
+    window_labels = {"30 days": 30, "90 days": 90, "180 days": 180, "1 year": 365}
+    window_label = st.segmented_control("Window", options=list(window_labels),
+                                        default="90 days", label_visibility="collapsed") or "90 days"
+    show_raw = st.checkbox("Show every reading instead of the daily average")
+
+    df = data.load_blood_pressure(user_id, window_labels[window_label])
+    if df.empty:
+        st.info(f"No blood pressure readings yet for {user_id.title()}.")
+        return
+
+    latest = df.sort_values("measurement_ts_utc").iloc[-1]
+    o1, o2, o3, o4 = st.columns(4)
+    o1.metric("Readings", len(df), border=True)
+    o2.metric("Latest systolic", _stat(latest["systolic"]), border=True)
+    o3.metric("Latest diastolic", _stat(latest["diastolic"]), border=True)
+    o4.metric("Latest pulse", _stat(latest["pulse"]), border=True)
+
+    with st.container(border=True):
+        st.subheader("🩸 Blood Pressure")
+        if show_raw:
+            fig = charts.bp_fig(df)
+        else:
+            fig = charts.bp_history_fig(transforms.bp_daily_agg(df))
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+
 @st.fragment
 def _paired_experiment(user_id: str, meal_a, meal_b, acts_a, acts_b):
     """Paired Meal Experiment: the slider and everything it drives.
@@ -470,12 +512,13 @@ if not auth.gate(user_id):
 # hence the `or "Single Meal"` fallback.
 view = st.segmented_control("View",
                             options=["Single Meal", "Paired Meal Experiment",
-                                     "Intensity × Sleep"],
+                                     "Intensity × Sleep", "Blood Pressure"],
                             default="Single Meal", label_visibility="collapsed") or "Single Meal"
 
-# Meals are only loaded for the meal-anchored views — Intensity × Sleep runs
-# on Garmin daily data alone, so a subject with no logged meals still gets it.
-if view != "Intensity × Sleep":
+# Meals are only loaded for the meal-anchored views — Intensity × Sleep and
+# Blood Pressure run on Garmin/Omron data alone, so a subject with no logged
+# meals still gets them.
+if view not in ("Intensity × Sleep", "Blood Pressure"):
     # Every load_* call below takes user_id, so switching subjects re-keys the
     # cache and re-queries rather than reusing the previous subject's frames.
     meals = data.load_meals(user_id)
@@ -487,6 +530,9 @@ if view != "Intensity × Sleep":
 
 if view == "Intensity × Sleep":
     _intensity_sleep_view(user_id)
+
+elif view == "Blood Pressure":
+    _blood_pressure_view(user_id)
 
 elif view == "Single Meal":
     selected_label = st.selectbox("Meal", meals["_label"])
