@@ -31,15 +31,26 @@ Usage:
 import argparse
 import getpass
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import httpx
 
 # Import the shared sync logic directly — no HTTP round-trip to the deployed
 # function, since this script already holds the fresh token in memory and
 # already has BigQuery access via the operator's own gcloud ADC.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "functions" / "whoop_sync"))
 import sync  # noqa: E402
+
+# On Windows, gcloud is a .cmd batch wrapper, not a .exe — subprocess.run()
+# with shell=False (the default, kept here rather than risking shell=True)
+# won't find it from a bare "gcloud" the way a real shell's PATHEXT lookup
+# would. shutil.which() does that resolution correctly on every platform.
+_GCLOUD = shutil.which("gcloud")
+if _GCLOUD is None:
+    sys.exit("gcloud not found on PATH — install/authenticate the Cloud SDK first.")
 
 
 def _save_token(user: str, whoop_user_id: str, access_token: str) -> None:
@@ -50,12 +61,12 @@ def _save_token(user: str, whoop_user_id: str, access_token: str) -> None:
     secret = f"whoop-token-{user}"
     payload = json.dumps({"user_id": whoop_user_id, "access_token": access_token}).encode()
     created = subprocess.run(
-        ["gcloud", "secrets", "create", secret,
+        [_GCLOUD, "secrets", "create", secret,
          "--data-file=-", "--replication-policy=automatic"],
         input=payload, capture_output=True)
     if created.returncode != 0:   # non-zero = it already exists
         subprocess.run(
-            ["gcloud", "secrets", "versions", "add", secret, "--data-file=-"],
+            [_GCLOUD, "secrets", "versions", "add", secret, "--data-file=-"],
             input=payload, check=True)
 
 
@@ -78,6 +89,12 @@ def main() -> None:
     try:
         rows = sync.sync_user(user, whoop_user_id, access_token, args.days)
         print(f"\n✅ Synced {rows} heart-rate readings for {user}.")
+    except httpx.HTTPStatusError as exc:
+        print(f"\n❌ Sync failed: HTTP {exc.response.status_code} — "
+              f"{exc.response.text}", file=sys.stderr)
+        print("Token is saved regardless — if this was a bad/expired token, "
+              "recapture it and rerun this script.", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         print(f"\n❌ Sync failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         print("Token is saved regardless — if this was a bad/expired token, "
