@@ -92,6 +92,7 @@ mk_table garmin_daily "${HERE}/bigquery/garmin_daily.json" date       DAY
 mk_table hrv_readings "${HERE}/bigquery/hrv_readings.json" sleep_date DAY
 mk_table hr_readings  "${HERE}/bigquery/hr_readings.json"  sleep_date DAY
 mk_table garmin_activities "${HERE}/bigquery/garmin_activities.json" start_ts DAY
+mk_table whoop_hr_readings "${HERE}/bigquery/whoop_hr_readings.json" ts DAY
 
 # --------------------------------------------------------------------------- #
 # 4. Service account for the pipeline (functions run as this)

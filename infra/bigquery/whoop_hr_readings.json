@@ -1,0 +1,6 @@
+[
+  {"name": "user_id",     "type": "STRING",    "mode": "REQUIRED", "description": "Which person this HR reading belongs to"},
+  {"name": "ts",          "type": "TIMESTAMP",  "mode": "REQUIRED", "description": "Reading timestamp (UTC). WHOOP's metrics-service samples heart rate about every 6 seconds, continuously, all day"},
+  {"name": "hr_value",    "type": "INTEGER",    "mode": "NULLABLE", "description": "Heart rate (bpm) for this ~6-second epoch"},
+  {"name": "ingested_ts", "type": "TIMESTAMP",  "mode": "NULLABLE", "description": "When the pipeline stored this row"}
+]

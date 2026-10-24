@@ -43,6 +43,7 @@ jobs:
       omron_sync: ${{ steps.f.outputs.omron_sync }}
       libre_sync: ${{ steps.f.outputs.libre_sync }}
       upload_photo: ${{ steps.f.outputs.upload_photo }}
+      whoop_sync: ${{ steps.f.outputs.whoop_sync }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -58,6 +59,7 @@ jobs:
             omron_sync: 'functions/omron_sync/**'
             libre_sync: 'functions/libre_sync/**'
             upload_photo: 'functions/upload_photo/**'
+            whoop_sync: 'functions/whoop_sync/**'
 
   # Gate: nothing deploys unless the test suites pass.
   test:
@@ -68,7 +70,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install -r functions/health_dashboard/requirements.txt pytest
+      - run: pip install -r functions/health_dashboard/requirements.txt -r functions/whoop_sync/requirements.txt pytest
       - run: python -m pytest functions/ -v
 
   deploy:
@@ -121,6 +123,30 @@ jobs:
         run: |
           gcloud functions deploy omron-sync --gen2 --region="$REGION" --project="$PROJECT" \
             --source=functions/omron_sync --runtime=python312 --entry-point=omron_sync
+
+      # whoop-sync has no Cloud Scheduler job pointed at it, unlike every
+      # other *_sync function here — WHOOP has no usable token-refresh flow
+      # (see functions/whoop_sync/sync.py's docstring), so a timer would
+      # spend most invocations failing against an already-dead token.
+      # ingestion/whoop/login_and_sync.py calls the sync logic in-process
+      # right after each manual login instead; this deploy exists for an
+      # ad-hoc manual resync and to be ready for a Scheduler later if that
+      # constraint ever changes.
+      #
+      # --service-account/--trigger-http are explicit here because this is
+      # a first-ever deploy — same reasoning as garmin-activity-sync's first
+      # deploy above. Unlike that one, no --set-env-vars: sync.py hardcodes
+      # PROJECT/BQ_DATASET as plain constants (there's only one project/
+      # dataset in this repo), so there's nothing for env vars to configure.
+      # No --allow-unauthenticated: stays IAM-protected like
+      # omron-sync/garmin-sync, not public like health-dashboard.
+      - name: whoop-sync
+        if: ${{ needs.changes.outputs.whoop_sync == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy whoop-sync --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/whoop_sync --runtime=python312 --entry-point=whoop_sync \
+            --service-account=twin-pipeline@digitaltwin-499202.iam.gserviceaccount.com \
+            --trigger-http
 
       - name: libre-sync
         if: ${{ needs.changes.outputs.libre_sync == 'true' || github.event_name == 'workflow_dispatch' }}

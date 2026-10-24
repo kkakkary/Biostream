@@ -19,6 +19,10 @@ meals/
 *.csv
 *.parquet
 
+# Scratch/local analysis notebooks — not part of the tracked notebooks/ catalog
+notebooks/scratch/
+.ipynb_checkpoints/
+
 # Python
 __pycache__/
 *.py[cod]

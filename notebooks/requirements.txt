@@ -4,4 +4,5 @@ google-cloud-bigquery>=3.25.0
 db-dtypes>=1.2.0          # lets BigQuery -> pandas convert DATE/TIMESTAMP cleanly
 pandas>=2.0.0
 matplotlib>=3.8.0
+scipy>=1.14.0             # t-tests in notebooks/scratch
 jupyter>=1.0.0

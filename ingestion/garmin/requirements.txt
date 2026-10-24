@@ -1,2 +1,3 @@
 garminconnect
 fitparse
+curl_cffi

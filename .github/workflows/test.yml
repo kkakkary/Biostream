@@ -22,7 +22,8 @@ jobs:
 
       - name: Install dashboard dependencies
         run: |
-          pip install -r functions/health_dashboard/requirements.txt pytest
+          pip install -r functions/health_dashboard/requirements.txt \
+                      -r functions/whoop_sync/requirements.txt pytest
 
       - name: Run test suites
         run: |

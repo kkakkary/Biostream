@@ -17,6 +17,7 @@ by the user on their phone.)
 """
 
 import getpass     # password prompt that doesn't echo keystrokes to the screen
+import shutil      # locate the gcloud executable on PATH
 import subprocess  # run the gcloud CLI as a child process
 import sys
 
@@ -28,6 +29,13 @@ def main() -> None:
     if len(sys.argv) != 2:
         sys.exit("usage: python bootstrap_token.py <user_id>   (e.g. christian)")
     user = sys.argv[1].strip().lower()
+
+    # On Windows gcloud is gcloud.cmd, which subprocess can't find by bare name,
+    # so resolve the full path. Check before logging in so a missing gcloud
+    # doesn't waste a (rate-limited) Garmin login.
+    gcloud = shutil.which("gcloud")
+    if not gcloud:
+        sys.exit("gcloud not found on PATH — install/initialize the Google Cloud SDK first.")
 
     email = input(f"[{user}] Garmin email: ").strip()
     password = getpass.getpass(f"[{user}] Garmin password: ")
@@ -44,12 +52,12 @@ def main() -> None:
     # is piped via stdin so it is never printed to the terminal.
     # (--data-file=- means "read the payload from stdin".)
     created = subprocess.run(
-        ["gcloud", "secrets", "create", secret,
+        [gcloud, "secrets", "create", secret,
          "--data-file=-", "--replication-policy=automatic"],
         input=token.encode(), capture_output=True)
     if created.returncode != 0:   # non-zero exit = create failed, i.e. it already exists
         subprocess.run(
-            ["gcloud", "secrets", "versions", "add", secret, "--data-file=-"],
+            [gcloud, "secrets", "versions", "add", secret, "--data-file=-"],
             input=token.encode(), check=True)   # check=True: crash loudly if this fails too
 
     print(f"\n✅ Stored token as Secret Manager secret: {secret}")
