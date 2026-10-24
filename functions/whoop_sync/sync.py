@@ -28,7 +28,21 @@ TABLE = f"{PROJECT}.{DATASET}.whoop_hr_readings"
 API_HOST = "https://api.prod.whoop.com"
 STEP_SECONDS = 6   # validated live: continuous, gap-free, all-day coverage at this step
 
-_bq = bigquery.Client(project=PROJECT)
+_bq_client: bigquery.Client | None = None
+
+
+def _bq() -> bigquery.Client:
+    """Lazy, cached BigQuery client — NOT built at import time (unlike
+    omron_sync/garmin_sync's module-level client), because test_sync.py
+    imports this module to test parse_rows() in CI, where there are no GCP
+    credentials at all. Building eagerly broke exactly that: the test
+    runner has no ADC file, so bigquery.Client() raised
+    DefaultCredentialsError just from importing the module, before any test
+    even ran."""
+    global _bq_client
+    if _bq_client is None:
+        _bq_client = bigquery.Client(project=PROJECT)
+    return _bq_client
 
 
 def _iso_ms(epoch_ms: int) -> str:
@@ -106,14 +120,14 @@ def _upsert(user_id: str, rows: list[dict]) -> None:
     scoped to the UTC dates actually covered by these rows, so a generous
     backfill window is cheap to re-run and never creates duplicates."""
     dates = sorted({r["ts"][:10] for r in rows})
-    _bq.query(
+    _bq().query(
         f"DELETE FROM `{TABLE}` WHERE user_id=@u AND DATE(ts) IN UNNEST(@d)",
         job_config=bigquery.QueryJobConfig(query_parameters=[
             bigquery.ScalarQueryParameter("u", "STRING", user_id),
             bigquery.ArrayQueryParameter("d", "DATE", dates),
         ]),
     ).result()
-    _bq.load_table_from_json(
+    _bq().load_table_from_json(
         rows, TABLE,
         job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
     ).result()
