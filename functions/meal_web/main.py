@@ -33,6 +33,7 @@ import hashlib     # SHA-256 for Omron's checksum header
 import json
 import os
 import uuid        # random ids for saved-meal templates
+from urllib.parse import urlencode   # builds the WHOOP OAuth authorization URL's query string
 
 import httpx       # HTTP client used for Omron
 import requests    # HTTP client used to forward meals to the meal-upload function
@@ -426,6 +427,38 @@ def manifest():
     return Response(json.dumps(MANIFEST), mimetype="application/manifest+json")
 
 
+PRIVACY_POLICY_HTML = """
+<h1>Privacy Policy</h1>
+<p class="muted">Last updated 2026-10-29</p>
+<div class="card">
+<p>This is a personal health-tracking project, not a commercial product or
+public service. It is used by a small number of people known personally to
+the operator (family/household), each with their own private link to this
+site.</p>
+<p>Data collected — meal photos/descriptions, and biometric readings (heart
+rate, blood pressure, glucose, sleep, recovery, and related metrics) pulled
+from third-party services you explicitly connect (e.g. Garmin, Omron, Libre,
+WHOOP) via that service's own sign-in or OAuth consent — is stored in a
+private Google Cloud project and used solely to show it back to you on this
+site's dashboard. It is never sold, shared with advertisers, or used for any
+purpose beyond that.</p>
+<p>Only the operator and the individual the data belongs to can access it.
+You can revoke access at any time by disconnecting the relevant third-party
+account (e.g. via WHOOP's own app settings) or by asking the operator to
+delete your data.</p>
+<p>Questions? Contact the person who sent you your link.</p>
+</div>
+"""
+
+
+@app.get("/privacy")
+def privacy():
+    """Static privacy policy — required by WHOOP's (and similar) developer
+    app registration, which needs a public URL even for a small personal/
+    sandbox app. No link_token: this one page is meant to be public."""
+    return Response(_connect_shell(PRIVACY_POLICY_HTML, title="Privacy Policy"), mimetype="text/html")
+
+
 @app.get("/m/<link_token>")
 def page(link_token: str):
     """Serve the main page. <link_token> in the route is a URL variable —
@@ -779,3 +812,141 @@ def _omron_connect_success(user: str) -> str:
     return f"""<div class="card"><h1>✅ Omron connected</h1>
     <p class="muted">Thanks {user} — your blood pressure data will start syncing automatically.
     You can close this page.</p></div>"""
+
+
+# --------------------------------------------------------------------------- #
+# Connect WHOOP — official OAuth2, unlike the password-based flows above.
+# WHOOP redirects the user to its own consent screen, so this is two legs:
+#   /connect-whoop/<link_token>  -> redirect out to WHOOP
+#   /oauth/whoop/callback        -> WHOOP redirects back here (FIXED url,
+#                                   registered in the WHOOP developer
+#                                   dashboard in advance — it can't vary per
+#                                   user the way /connect/<token> does, so
+#                                   the link token rides along as the OAuth
+#                                   `state` value instead, and the callback
+#                                   resolves the user from that).
+#
+# This is a separate pipeline from functions/whoop_sync/ (the unofficial
+# raw-heart-rate endpoint, token stored as whoop-token-<user>) — different
+# secret prefix (whoop-oauth-<user>), different sync function, no shared
+# state. This one gets a real refresh token because it's WHOOP's own
+# sanctioned app flow, not a reverse-engineered one.
+# --------------------------------------------------------------------------- #
+# The fixed callback URL above, e.g. https://<meal-web's own Cloud Run
+# URL>/oauth/whoop/callback — set once after deploy via
+# `gcloud run services update meal-web --set-env-vars=WHOOP_REDIRECT_URI=...`
+# and registered as-is in the WHOOP developer dashboard. Not a secret (it's
+# a public URL), so this one stays a plain env var.
+WHOOP_REDIRECT_URI = os.environ.get("WHOOP_REDIRECT_URI", "")
+WHOOP_SCOPES = ("offline read:recovery read:cycles read:sleep "
+               "read:workout read:profile read:body_measurement")
+
+_whoop_client_creds: tuple[str, str] | None = None
+
+
+def _whoop_client_credentials() -> tuple[str, str]:
+    """The WHOOP app's own (client_id, client_secret) — one pair, shared by
+    every user, read from Secret Manager (whoop-oauth-client, {"client_id",
+    "client_secret"}) rather than env vars, since this is an actual secret.
+    Same secret functions/whoop_aggregates_sync/main.py._client_credentials
+    reads — must stay consistent with that. Cached per cold start."""
+    global _whoop_client_creds
+    if _whoop_client_creds is None:
+        name = f"projects/{PROJECT}/secrets/whoop-oauth-client/versions/latest"
+        body = json.loads(_sm.access_secret_version(name=name).payload.data.decode())
+        _whoop_client_creds = (body["client_id"], body["client_secret"])
+    return _whoop_client_creds
+
+
+def _store_whoop_oauth_token(user: str, tokens: dict) -> None:
+    """Save {access_token, refresh_token, expires_at} as whoop-oauth-<user>.
+    Same create-if-missing pattern as _store_garmin_token/_store_omron_token."""
+    secret_id = f"whoop-oauth-{user}"
+    parent = f"projects/{PROJECT}/secrets/{secret_id}"
+    try:
+        _sm.get_secret(name=parent)
+    except Exception:
+        _sm.create_secret(parent=f"projects/{PROJECT}", secret_id=secret_id,
+                           secret={"replication": {"automatic": {}}})
+    _sm.add_secret_version(parent=parent, payload={"data": json.dumps(tokens).encode()})
+
+
+@app.get("/connect-whoop/<link_token>")
+def connect_whoop(link_token: str):
+    """Kick off WHOOP's consent flow. No form here (unlike Garmin/Omron) —
+    there's nothing to collect; the next stop is WHOOP's own login page."""
+    _user_for(link_token)   # 404s an unknown token before redirecting anywhere
+    if not WHOOP_REDIRECT_URI:
+        return Response(_connect_shell(
+            '<div class="card err">WHOOP connect isn\'t configured yet '
+            '(missing redirect URI).</div>', title="Connect WHOOP"),
+            500, mimetype="text/html")
+    try:
+        client_id, _ = _whoop_client_credentials()
+    except Exception:
+        return Response(_connect_shell(
+            '<div class="card err">WHOOP connect isn\'t configured yet '
+            '(missing whoop-oauth-client secret).</div>', title="Connect WHOOP"),
+            500, mimetype="text/html")
+    params = {
+        "client_id": client_id,
+        "redirect_uri": WHOOP_REDIRECT_URI,
+        "response_type": "code",
+        "scope": WHOOP_SCOPES,
+        "state": link_token,
+    }
+    auth_url = f"https://api.prod.whoop.com/oauth/oauth2/auth?{urlencode(params)}"
+    return Response("", 302, {"Location": auth_url})
+
+
+@app.get("/oauth/whoop/callback")
+def whoop_callback():
+    """WHOOP redirects here after the user approves (or denies) access.
+    This URL is fixed and pre-registered with WHOOP, so — unlike every other
+    route in this file — the user comes from `state`, not the path."""
+    error = request.args.get("error")
+    code = request.args.get("code")
+    link_token = request.args.get("state", "")
+    user = _user_for(link_token)   # 404s a forged/missing state
+    if error or not code:
+        return Response(_connect_shell(
+            f'<div class="card err">WHOOP didn\'t grant access ({error or "no code"}).</div>',
+            title="Connect WHOOP"), 400, mimetype="text/html")
+    try:
+        client_id, client_secret = _whoop_client_credentials()
+        resp = requests.post(
+            "https://api.prod.whoop.com/oauth/oauth2/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": WHOOP_REDIRECT_URI,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        tokens = {
+            "access_token": body["access_token"],
+            "refresh_token": body["refresh_token"],
+            # Absolute expiry, not the raw expires_in — lets
+            # whoop_aggregates_sync tell at a glance whether it's stale
+            # without needing to know when this exchange happened.
+            "expires_at": (dt.datetime.now(dt.timezone.utc)
+                          + dt.timedelta(seconds=body["expires_in"])).isoformat(),
+        }
+        _store_whoop_oauth_token(user, tokens)
+        return Response(_connect_shell(_whoop_connect_success(user), title="Connect WHOOP"),
+                        mimetype="text/html")
+    except Exception as exc:
+        print(f"[connect-whoop] Unexpected error for user={user}: {type(exc).__name__}: {exc}")
+        return Response(_connect_shell(
+            '<div class="card err">Couldn\'t complete the WHOOP connection. Please try again.</div>',
+            title="Connect WHOOP"), 400, mimetype="text/html")
+
+
+def _whoop_connect_success(user: str) -> str:
+    return f"""<div class="card"><h1>✅ WHOOP connected</h1>
+    <p class="muted">Thanks {user} — your recovery, sleep, and workout data will start
+    syncing automatically. You can close this page.</p></div>"""

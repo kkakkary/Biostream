@@ -44,6 +44,7 @@ jobs:
       libre_sync: ${{ steps.f.outputs.libre_sync }}
       upload_photo: ${{ steps.f.outputs.upload_photo }}
       whoop_sync: ${{ steps.f.outputs.whoop_sync }}
+      whoop_aggregates_sync: ${{ steps.f.outputs.whoop_aggregates_sync }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -60,6 +61,7 @@ jobs:
             libre_sync: 'functions/libre_sync/**'
             upload_photo: 'functions/upload_photo/**'
             whoop_sync: 'functions/whoop_sync/**'
+            whoop_aggregates_sync: 'functions/whoop_aggregates_sync/**'
 
   # Gate: nothing deploys unless the test suites pass.
   test:
@@ -70,7 +72,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install -r functions/health_dashboard/requirements.txt -r functions/whoop_sync/requirements.txt pytest
+      - run: pip install -r functions/health_dashboard/requirements.txt -r functions/whoop_sync/requirements.txt -r functions/whoop_aggregates_sync/requirements.txt pytest
       - run: python -m pytest functions/ -v
 
   deploy:
@@ -145,6 +147,27 @@ jobs:
         run: |
           gcloud functions deploy whoop-sync --gen2 --region="$REGION" --project="$PROJECT" \
             --source=functions/whoop_sync --runtime=python312 --entry-point=whoop_sync \
+            --service-account=twin-pipeline@digitaltwin-499202.iam.gserviceaccount.com \
+            --trigger-http
+
+      # whoop-aggregates-sync is the OFFICIAL-API counterpart to whoop-sync
+      # above — recovery/cycle/sleep/workout, not raw heart rate. Unlike
+      # whoop-sync, this one DOES benefit from a Cloud Scheduler job: WHOOP's
+      # own OAuth2 app flow gives it a real, working refresh token (obtained
+      # via functions/meal_web's /connect-whoop/<token> + /oauth/whoop/callback
+      # routes), so it can run unattended. No script in this repo provisions
+      # Scheduler jobs for ANY function (confirmed — none exists in infra/),
+      # so that stays a one-off manual `gcloud scheduler jobs create`, same
+      # informal convention as everything else GCP-config-side here; see
+      # functions/whoop_aggregates_sync/main.py's docstring for the exact
+      # command. --service-account/--trigger-http explicit here for the same
+      # first-deploy reason as whoop-sync's block above; no
+      # --allow-unauthenticated, same IAM-protected default.
+      - name: whoop-aggregates-sync
+        if: ${{ needs.changes.outputs.whoop_aggregates_sync == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          gcloud functions deploy whoop-aggregates-sync --gen2 --region="$REGION" --project="$PROJECT" \
+            --source=functions/whoop_aggregates_sync --runtime=python312 --entry-point=whoop_aggregates_sync \
             --service-account=twin-pipeline@digitaltwin-499202.iam.gserviceaccount.com \
             --trigger-http
 

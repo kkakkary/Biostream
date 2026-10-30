@@ -1,0 +1,14 @@
+[
+  {"name": "user_id",      "type": "STRING",    "mode": "REQUIRED", "description": "Which person this workout belongs to"},
+  {"name": "workout_id",   "type": "STRING",    "mode": "REQUIRED", "description": "WHOOP's workout UUID; idempotency key alongside user_id"},
+  {"name": "sport_name",   "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "start_ts",     "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "end_ts",       "type": "TIMESTAMP", "mode": "NULLABLE"},
+  {"name": "strain",       "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "avg_hr",       "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "max_hr",       "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "kilojoule",    "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "distance_m",   "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "ingested_ts",  "type": "TIMESTAMP", "mode": "NULLABLE", "description": "When the pipeline stored this row"},
+  {"name": "raw",          "type": "JSON",      "mode": "NULLABLE", "description": "Full WHOOP workout payload, lossless"}
+]

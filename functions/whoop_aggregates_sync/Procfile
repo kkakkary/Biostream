@@ -1,0 +1,1 @@
+web: functions-framework --target=whoop_aggregates_sync --port=$PORT
