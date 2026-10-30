@@ -16,19 +16,24 @@ import aggregates_sync as sync  # noqa: E402
 
 
 def test_parse_daily_rows_joins_cycle_recovery_and_sleep_by_cycle_id():
+    # WHOOP's live API returns these as floats (e.g. 79.0), not ints, even
+    # though the schema types them INTEGER — BigQuery's JSON loader refuses
+    # to coerce a float literal into an INTEGER column, so these fixtures
+    # deliberately use floats to catch that (caught live: BadRequest "Could
+    # not convert value 'number_value: \"79.0\"' to integer").
     cycles = [{
         "id": 93845, "start": "2026-10-28T12:00:00.000Z", "end": "2026-10-29T12:00:00.000Z",
-        "step_count": 8234,
-        "score": {"strain": 5.3, "kilojoule": 8288.3, "average_heart_rate": 68, "max_heart_rate": 141},
+        "step_count": 8234.0,
+        "score": {"strain": 5.3, "kilojoule": 8288.3, "average_heart_rate": 68.0, "max_heart_rate": 141.0},
     }]
     recovery = [{
         "cycle_id": 93845,
-        "score": {"recovery_score": 72, "resting_heart_rate": 52, "hrv_rmssd_milli": 65.4,
+        "score": {"recovery_score": 72.0, "resting_heart_rate": 52.0, "hrv_rmssd_milli": 65.4,
                   "spo2_percentage": 97.1, "skin_temp_celsius": 33.2},
     }]
     sleep = [{
         "cycle_id": 93845, "nap": False,
-        "score": {"respiratory_rate": 14.5, "sleep_performance_percentage": 98,
+        "score": {"respiratory_rate": 14.5, "sleep_performance_percentage": 98.0,
                   "sleep_efficiency_percentage": 91.7,
                   "stage_summary": {"total_slow_wave_sleep_time_milli": 3600000,
                                     "total_rem_sleep_time_milli": 1800000,
@@ -41,10 +46,12 @@ def test_parse_daily_rows_joins_cycle_recovery_and_sleep_by_cycle_id():
     r = rows[0]
     assert r["cycle_id"] == 93845
     assert r["day_strain"] == 5.3
-    assert r["recovery_score"] == 72
+    assert r["recovery_score"] == 72 and isinstance(r["recovery_score"], int)
     assert r["hrv_rmssd_milli"] == 65.4
-    assert r["resting_hr"] == 52
-    assert r["sleep_performance_percentage"] == 98
+    assert r["resting_hr"] == 52 and isinstance(r["resting_hr"], int)
+    assert r["sleep_performance_percentage"] == 98 and isinstance(r["sleep_performance_percentage"], int)
+    assert r["step_count"] == 8234 and isinstance(r["step_count"], int)
+    assert r["day_avg_hr"] == 68 and isinstance(r["day_avg_hr"], int)
     # ms -> seconds conversion
     assert r["deep_sleep_seconds"] == 3600
     assert r["rem_sleep_seconds"] == 1800
@@ -82,7 +89,9 @@ def test_parse_workout_rows_converts_fields_and_local_time():
     workouts = [{
         "id": "abc-123", "start": "2026-10-28T20:00:00.000Z", "end": "2026-10-28T21:00:00.000Z",
         "sport_name": "running",
-        "score": {"strain": 9.1, "average_heart_rate": 150, "max_heart_rate": 178,
+        # average_heart_rate/max_heart_rate as floats, same live-API quirk
+        # as the daily-rows test above.
+        "score": {"strain": 9.1, "average_heart_rate": 150.0, "max_heart_rate": 178.0,
                   "kilojoule": 2100.5, "distance_meter": 8000.0},
     }]
     rows = sync.parse_workout_rows("christian", workouts, "2026-10-29T00:00:00")
@@ -91,6 +100,7 @@ def test_parse_workout_rows_converts_fields_and_local_time():
     assert r["workout_id"] == "abc-123"
     assert r["sport_name"] == "running"
     assert r["strain"] == 9.1
+    assert r["avg_hr"] == 150 and isinstance(r["avg_hr"], int)
     assert r["distance_m"] == 8000.0
     # 2026-10-28T20:00:00Z -> 2026-10-28T13:00:00 local (UTC-7)
     assert r["start_ts"] == "2026-10-28T13:00:00"

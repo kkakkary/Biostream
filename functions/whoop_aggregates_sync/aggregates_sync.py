@@ -57,6 +57,15 @@ def _local_iso(utc_iso: str) -> str:
     return (ts + PDT_OFFSET).replace(tzinfo=None).isoformat()
 
 
+def _to_int(x) -> int | None:
+    """WHOOP's API returns some logically-integer fields (recovery_score,
+    heart rates, step_count, sleep_performance_percentage) as floats, e.g.
+    79.0 — BigQuery's JSON loader refuses to coerce a float literal into an
+    INTEGER column, so every field typed INTEGER in whoop_daily.json/
+    whoop_workouts.json must be cast explicitly before loading."""
+    return int(x) if isinstance(x, (int, float)) else None
+
+
 def refresh_if_needed(tokens: dict, client_id: str, client_secret: str) -> dict:
     """Refresh only when actually needed (checked against the stored
     expires_at, 5-minute safety buffer) — unlike Omron, WHOOP's access
@@ -149,7 +158,7 @@ def parse_daily_rows(user_id: str, cycles: list[dict], recovery: list[dict],
             "cycle_end": _local_iso(c["end"]) if c.get("end") else None,
             "day_strain": None, "day_kilojoule": None,
             "day_avg_hr": None, "day_max_hr": None,
-            "step_count": c.get("step_count"),
+            "step_count": _to_int(c.get("step_count")),
             "recovery_score": None, "hrv_rmssd_milli": None, "resting_hr": None,
             "spo2_percentage": None, "skin_temp_celsius": None,
             "respiratory_rate": None,
@@ -164,15 +173,15 @@ def parse_daily_rows(user_id: str, cycles: list[dict], recovery: list[dict],
         cycle_score = c.get("score") or {}
         row["day_strain"] = cycle_score.get("strain")
         row["day_kilojoule"] = cycle_score.get("kilojoule")
-        row["day_avg_hr"] = cycle_score.get("average_heart_rate")
-        row["day_max_hr"] = cycle_score.get("max_heart_rate")
+        row["day_avg_hr"] = _to_int(cycle_score.get("average_heart_rate"))
+        row["day_max_hr"] = _to_int(cycle_score.get("max_heart_rate"))
 
         rec = recovery_by_cycle.get(cycle_id)
         if rec:
             rec_score = rec.get("score") or {}
-            row["recovery_score"] = rec_score.get("recovery_score")
+            row["recovery_score"] = _to_int(rec_score.get("recovery_score"))
             row["hrv_rmssd_milli"] = rec_score.get("hrv_rmssd_milli")
-            row["resting_hr"] = rec_score.get("resting_heart_rate")
+            row["resting_hr"] = _to_int(rec_score.get("resting_heart_rate"))
             row["spo2_percentage"] = rec_score.get("spo2_percentage")
             row["skin_temp_celsius"] = rec_score.get("skin_temp_celsius")
 
@@ -181,7 +190,7 @@ def parse_daily_rows(user_id: str, cycles: list[dict], recovery: list[dict],
             slp_score = slp.get("score") or {}
             stages = slp_score.get("stage_summary") or {}
             row["respiratory_rate"] = slp_score.get("respiratory_rate")
-            row["sleep_performance_percentage"] = slp_score.get("sleep_performance_percentage")
+            row["sleep_performance_percentage"] = _to_int(slp_score.get("sleep_performance_percentage"))
             row["sleep_efficiency_percentage"] = slp_score.get("sleep_efficiency_percentage")
             row["deep_sleep_seconds"] = _ms_to_s(stages.get("total_slow_wave_sleep_time_milli"))
             row["rem_sleep_seconds"] = _ms_to_s(stages.get("total_rem_sleep_time_milli"))
@@ -213,8 +222,8 @@ def parse_workout_rows(user_id: str, workouts: list[dict], ingested_ts: str) -> 
             "start_ts": _local_iso(start),
             "end_ts": _local_iso(w["end"]) if w.get("end") else None,
             "strain": score.get("strain"),
-            "avg_hr": score.get("average_heart_rate"),
-            "max_hr": score.get("max_heart_rate"),
+            "avg_hr": _to_int(score.get("average_heart_rate")),
+            "max_hr": _to_int(score.get("max_heart_rate")),
             "kilojoule": score.get("kilojoule"),
             "distance_m": score.get("distance_meter"),
             "ingested_ts": ingested_ts,
