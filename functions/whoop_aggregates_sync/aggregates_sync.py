@@ -21,6 +21,7 @@ import, no ADC on the test runner); not repeating that here.
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import requests
 from google.cloud import bigquery
@@ -34,12 +35,14 @@ API_HOST = "https://api.prod.whoop.com"
 TOKEN_URL = f"{API_HOST}/oauth/oauth2/token"
 PAGE_LIMIT = 25   # WHOOP's documented max per page
 
-# This pipeline stores local wall-clock time (fixed PDT, UTC-7, no DST) in
-# TIMESTAMP columns, matching every other table in this repo (glucose,
-# meals, whoop_hr_readings) — see whoop_sync/sync.py's PDT_OFFSET comment
-# for why. WHOOP's own API request params (start/end filters) stay real
-# UTC/ISO-8601, same split as the other pipeline.
-PDT_OFFSET = dt.timedelta(hours=-7)
+# This pipeline stores local wall-clock time in TIMESTAMP columns, matching
+# every other table in this repo (glucose, meals, whoop_hr_readings) — see
+# whoop_sync/sync.py's LOCAL_TZ comment for why. WHOOP's own API request
+# params (start/end filters) stay real UTC/ISO-8601, same split as the
+# other pipeline. Previously a hardcoded UTC-7 (PDT) offset, which silently
+# went an hour wrong every time DST changed; ZoneInfo tracks the actual
+# transitions instead.
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 _bq_client: bigquery.Client | None = None
 
@@ -52,9 +55,9 @@ def _bq() -> bigquery.Client:
 
 
 def _local_iso(utc_iso: str) -> str:
-    """WHOOP's own ISO-8601 UTC string -> fixed-PDT local, naive isoformat."""
+    """WHOOP's own ISO-8601 UTC string -> DST-aware local, naive isoformat."""
     ts = dt.datetime.fromisoformat(utc_iso.replace("Z", "+00:00"))
-    return (ts + PDT_OFFSET).replace(tzinfo=None).isoformat()
+    return ts.astimezone(LOCAL_TZ).replace(tzinfo=None).isoformat()
 
 
 def _to_int(x) -> int | None:
@@ -269,7 +272,7 @@ def sync_user_data(user_id: str, access_token: str, days: int) -> dict:
     sleep = fetch_sleep(access_token, start_iso, end_iso)
     workouts = fetch_workouts(access_token, start_iso, end_iso)
 
-    ingested_ts = (now + PDT_OFFSET).replace(tzinfo=None).isoformat()
+    ingested_ts = now.astimezone(LOCAL_TZ).replace(tzinfo=None).isoformat()
     daily_rows = parse_daily_rows(user_id, cycles, recovery, sleep, ingested_ts)
     workout_rows = parse_workout_rows(user_id, workouts, ingested_ts)
 

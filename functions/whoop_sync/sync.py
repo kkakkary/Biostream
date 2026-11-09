@@ -17,6 +17,7 @@ file: a 401 means a human needs to log in again, not a bug here.
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import httpx
 from google.cloud import bigquery
@@ -28,12 +29,13 @@ TABLE = f"{PROJECT}.{DATASET}.whoop_hr_readings"
 API_HOST = "https://api.prod.whoop.com"
 STEP_SECONDS = 6   # validated live: continuous, gap-free, all-day coverage at this step
 
-# This pipeline stores local wall-clock time (fixed PDT, UTC-7 — no DST
-# handling, same simplification glucose/meals already use) directly in
-# TIMESTAMP columns, not genuine UTC. Only the WHOOP API request itself
-# (start/end sent to _fetch_heart_rate) stays in real UTC/ISO-8601 — that's
-# what the API expects; this offset only applies to what gets stored.
-PDT_OFFSET = dt.timedelta(hours=-7)
+# This pipeline stores local wall-clock time directly in TIMESTAMP columns,
+# not genuine UTC (only the WHOOP API request itself — start/end sent to
+# _fetch_heart_rate — stays real UTC/ISO-8601, since that's what the API
+# expects). Previously a hardcoded UTC-7 (PDT) offset, which silently went
+# an hour wrong every time DST changed; ZoneInfo tracks the actual
+# transitions instead.
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 _bq_client: bigquery.Client | None = None
 
@@ -112,7 +114,7 @@ def parse_rows(user_id: str, payload: dict, ingested_ts: str) -> list[dict]:
         ts_ms, value = v.get("time"), v.get("data")
         if not isinstance(ts_ms, (int, float)) or not isinstance(value, (int, float)):
             continue
-        ts = (dt.datetime.fromtimestamp(ts_ms / 1000, tz=dt.timezone.utc) + PDT_OFFSET).replace(tzinfo=None)
+        ts = dt.datetime.fromtimestamp(ts_ms / 1000, tz=dt.timezone.utc).astimezone(LOCAL_TZ).replace(tzinfo=None)
         out.append({
             "user_id": user_id,
             "ts": ts.isoformat(),
@@ -150,7 +152,7 @@ def sync_user(user_id: str, whoop_user_id: str, access_token: str, days: int) ->
     end_ms = int(now.timestamp() * 1000)
 
     payload = _fetch_heart_rate(whoop_user_id, access_token, start_ms, end_ms)
-    ingested_ts = (now + PDT_OFFSET).replace(tzinfo=None).isoformat()
+    ingested_ts = now.astimezone(LOCAL_TZ).replace(tzinfo=None).isoformat()
     rows = parse_rows(user_id, payload, ingested_ts)
     if rows:
         _upsert(user_id, rows)

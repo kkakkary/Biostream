@@ -57,7 +57,7 @@ def test_parse_daily_rows_joins_cycle_recovery_and_sleep_by_cycle_id():
     assert r["rem_sleep_seconds"] == 1800
     assert r["light_sleep_seconds"] == 14400
     assert r["awake_seconds"] == 600
-    # fixed-PDT local time (UTC-7): 2026-10-28T12:00:00Z -> 2026-10-28T05:00:00
+    # DST-aware local time, PDT (UTC-7) this time of year: 2026-10-28T12:00:00Z -> 2026-10-28T05:00:00
     assert r["cycle_start"] == "2026-10-28T05:00:00"
     assert r["date"] == "2026-10-28"
 
