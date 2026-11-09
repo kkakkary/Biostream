@@ -142,18 +142,40 @@ def _upsert(user_id: str, rows: list[dict]) -> None:
     ).result()
 
 
+# metrics-service 400s ("Time range of X hours exceeds the maximum of 192
+# hours") on any single request spanning more than this — confirmed live
+# when a 9-day DST-correction backfill (needed one-off, not a normal daily
+# --days 7 run) tripped it. Chunk width stays comfortably under the cap
+# rather than cutting it close.
+MAX_RANGE_HOURS = 192
+CHUNK_HOURS = 168   # 7 days
+
+
 def sync_user(user_id: str, whoop_user_id: str, access_token: str, days: int) -> int:
     """Fetch the last `days` of heart rate for one user and upsert into
     whoop_hr_readings. Returns the number of rows written (0 if none).
+
+    Splits into multiple metrics-service calls when `days` would otherwise
+    exceed the API's 192-hour-per-request cap — each chunk is parsed and
+    upserted independently, so a failure partway through still keeps
+    whatever chunks already landed (sync_user's idempotent delete-then-load
+    makes re-running the whole thing afterward safe, not duplicating).
     """
     now = dt.datetime.now(dt.timezone.utc)
     start = (now - dt.timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
-    start_ms = int(start.timestamp() * 1000)
-    end_ms = int(now.timestamp() * 1000)
-
-    payload = _fetch_heart_rate(whoop_user_id, access_token, start_ms, end_ms)
     ingested_ts = now.astimezone(LOCAL_TZ).replace(tzinfo=None).isoformat()
-    rows = parse_rows(user_id, payload, ingested_ts)
-    if rows:
-        _upsert(user_id, rows)
-    return len(rows)
+
+    total = 0
+    chunk_start = start
+    while chunk_start < now:
+        chunk_end = min(chunk_start + dt.timedelta(hours=CHUNK_HOURS), now)
+        payload = _fetch_heart_rate(whoop_user_id, access_token,
+                                    int(chunk_start.timestamp() * 1000),
+                                    int(chunk_end.timestamp() * 1000))
+        rows = parse_rows(user_id, payload, ingested_ts)
+        if rows:
+            _upsert(user_id, rows)
+        total += len(rows)
+        chunk_start = chunk_end
+
+    return total
