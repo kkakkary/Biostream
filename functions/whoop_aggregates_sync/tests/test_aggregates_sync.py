@@ -33,6 +33,7 @@ def test_parse_daily_rows_joins_cycle_recovery_and_sleep_by_cycle_id():
     }]
     sleep = [{
         "cycle_id": 93845, "nap": False,
+        "start": "2026-10-28T12:00:00.000Z", "end": "2026-10-28T19:15:21.140Z",
         "score": {"respiratory_rate": 14.5, "sleep_performance_percentage": 98.0,
                   "sleep_efficiency_percentage": 91.7,
                   "stage_summary": {"total_slow_wave_sleep_time_milli": 3600000,
@@ -60,6 +61,13 @@ def test_parse_daily_rows_joins_cycle_recovery_and_sleep_by_cycle_id():
     # DST-aware local time, PDT (UTC-7) this time of year: 2026-10-28T12:00:00Z -> 2026-10-28T05:00:00
     assert r["cycle_start"] == "2026-10-28T05:00:00"
     assert r["date"] == "2026-10-28"
+    # sleep.start/sleep.end come from the Sleep object's own fields, not
+    # derived from summed stage durations — here sleep.start coincides with
+    # cycle.start (both 12:00:00Z), but sleep.end is a real wake time
+    # (19:15:21.140Z local-converted), unlike cycle_end which would be the
+    # START of the next night's sleep.
+    assert r["sleep_start"] == "2026-10-28T05:00:00"
+    assert r["sleep_end"] == "2026-10-28T12:15:21.140000"
 
 
 def test_parse_daily_rows_keeps_cycle_with_no_recovery_or_sleep_yet():
@@ -71,6 +79,8 @@ def test_parse_daily_rows_keeps_cycle_with_no_recovery_or_sleep_yet():
     assert rows[0]["day_strain"] == 2.1
     assert rows[0]["recovery_score"] is None
     assert rows[0]["deep_sleep_seconds"] is None
+    assert rows[0]["sleep_start"] is None
+    assert rows[0]["sleep_end"] is None
 
 
 def test_parse_daily_rows_ignores_naps_when_matching_sleep_to_a_cycle():

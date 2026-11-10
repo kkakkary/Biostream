@@ -15,6 +15,8 @@
   {"name": "spo2_percentage",             "type": "FLOAT",     "mode": "NULLABLE"},
   {"name": "skin_temp_celsius",           "type": "FLOAT",     "mode": "NULLABLE"},
   {"name": "respiratory_rate",            "type": "FLOAT",     "mode": "NULLABLE", "description": "From the night's main Sleep object"},
+  {"name": "sleep_start",                 "type": "TIMESTAMP", "mode": "NULLABLE", "description": "Sleep object's own start (onset) — NOT the same thing as cycle_start's definition, even though they usually coincide"},
+  {"name": "sleep_end",                   "type": "TIMESTAMP", "mode": "NULLABLE", "description": "Sleep object's own end (wake) — unlike cycle_end, this is a real wake time, not the next day's sleep onset"},
   {"name": "sleep_performance_percentage","type": "INTEGER",   "mode": "NULLABLE"},
   {"name": "sleep_efficiency_percentage", "type": "FLOAT",     "mode": "NULLABLE"},
   {"name": "deep_sleep_seconds",          "type": "INTEGER",   "mode": "NULLABLE", "description": "stage_summary.total_slow_wave_sleep_time_milli / 1000"},

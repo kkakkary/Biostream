@@ -165,6 +165,7 @@ def parse_daily_rows(user_id: str, cycles: list[dict], recovery: list[dict],
             "recovery_score": None, "hrv_rmssd_milli": None, "resting_hr": None,
             "spo2_percentage": None, "skin_temp_celsius": None,
             "respiratory_rate": None,
+            "sleep_start": None, "sleep_end": None,
             "sleep_performance_percentage": None, "sleep_efficiency_percentage": None,
             "deep_sleep_seconds": None, "rem_sleep_seconds": None,
             "light_sleep_seconds": None, "awake_seconds": None,
@@ -192,6 +193,17 @@ def parse_daily_rows(user_id: str, cycles: list[dict], recovery: list[dict],
         if slp:
             slp_score = slp.get("score") or {}
             stages = slp_score.get("stage_summary") or {}
+            # Sleep's own start/end — top-level on the Sleep object, NOT nested
+            # under score. Confirmed live: sleep.start usually equals
+            # cycle_start (the cycle boundary IS sleep onset), but sleep.end is
+            # the real wake time, unlike cycle_end (which is the START of the
+            # NEXT night's sleep, not this night's wake). Reading these
+            # directly beats deriving "end" from summed stage durations —
+            # WHOOP's own wake-detection is ground truth, and summing four
+            # already-truncated _ms_to_s() values would just compound
+            # rounding error for no reason.
+            row["sleep_start"] = _local_iso(slp["start"]) if slp.get("start") else None
+            row["sleep_end"] = _local_iso(slp["end"]) if slp.get("end") else None
             row["respiratory_rate"] = slp_score.get("respiratory_rate")
             row["sleep_performance_percentage"] = _to_int(slp_score.get("sleep_performance_percentage"))
             row["sleep_efficiency_percentage"] = slp_score.get("sleep_efficiency_percentage")
