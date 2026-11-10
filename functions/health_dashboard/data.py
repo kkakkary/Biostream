@@ -81,11 +81,21 @@ def _user_param(user_id: str):
     return bigquery.ScalarQueryParameter("user_id", "STRING", user_id)
 
 
-def _window_params(user_id: str, start_ts, end_ts):
-    """The parameter triple used by every windowed loader below."""
+def _window_params(user_id: str, start_ts, end_ts, param_type: str = "DATETIME"):
+    """The parameter triple used by every windowed loader below.
+
+    param_type must match the queried column's LIVE BigQuery type, not just
+    whatever its infra/bigquery/*.json schema file says — confirmed live
+    that the two can disagree (meals.capture_ts/glucose.ts are actually
+    DATETIME despite their schema files saying TIMESTAMP, while
+    whoop_hr_readings.ts/whoop_daily.sleep_start really are TIMESTAMP).
+    BETWEEN has no implicit coercion across the two: a DATETIME-typed
+    parameter against a TIMESTAMP column 400s with "No matching signature
+    for operator BETWEEN", caught live building load_whoop_hr_window.
+    """
     return [_user_param(user_id),
-            bigquery.ScalarQueryParameter("start_ts", "DATETIME", start_ts),
-            bigquery.ScalarQueryParameter("end_ts", "DATETIME", end_ts)]
+            bigquery.ScalarQueryParameter("start_ts", param_type, start_ts),
+            bigquery.ScalarQueryParameter("end_ts", param_type, end_ts)]
 
 
 @st.cache_data(ttl=CACHE_TTL_S)
@@ -233,3 +243,41 @@ def load_hrv_for_sleep_date(user_id: str, sleep_date: str) -> pd.DataFrame:
         ORDER BY ts
     """, [_user_param(user_id),
           bigquery.ScalarQueryParameter("sleep_date", "DATE", sleep_date)])
+
+
+# --------------------------------------------------------------------------- #
+# WHOOP Sleep view: nightly cycle/recovery/sleep data + intraday HR.
+# --------------------------------------------------------------------------- #
+
+@st.cache_data(ttl=CACHE_TTL_S)
+def load_whoop_nights(user_id: str, days: int = 60) -> pd.DataFrame:
+    """Nights with a scored main Sleep (sleep_start IS NOT NULL excludes
+    in-progress cycles and cycles WHOOP never attached a main sleep to), most
+    recent first, for the night picker and its stats cards."""
+    return _query(f"""
+        SELECT date, cycle_id, sleep_start, sleep_end, recovery_score,
+               resting_hr, hrv_rmssd_milli, respiratory_rate,
+               sleep_performance_percentage, sleep_efficiency_percentage,
+               deep_sleep_seconds, rem_sleep_seconds, light_sleep_seconds,
+               awake_seconds
+        FROM `{DATASET}.whoop_daily`
+        WHERE user_id = @user_id
+          AND sleep_start IS NOT NULL
+          AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
+        ORDER BY sleep_start DESC
+    """, user_id, days)
+
+
+@st.cache_data(ttl=CACHE_TTL_S)
+def load_whoop_hr_window(user_id: str, start_ts, end_ts) -> pd.DataFrame:
+    """Intraday (~6-second) heart rate between two timestamps — used to plot
+    one night's sleep window. Same @start_ts/@end_ts windowed-loader pattern
+    as load_glucose_window, just against whoop_hr_readings instead — EXCEPT
+    the param_type override: whoop_hr_readings.ts is a real TIMESTAMP
+    column, unlike glucose.ts's DATETIME (see _window_params)."""
+    return _query_params(f"""
+        SELECT ts, hr_value
+        FROM `{DATASET}.whoop_hr_readings`
+        WHERE user_id = @user_id AND ts BETWEEN @start_ts AND @end_ts
+        ORDER BY ts
+    """, _window_params(user_id, start_ts, end_ts, param_type="TIMESTAMP"))

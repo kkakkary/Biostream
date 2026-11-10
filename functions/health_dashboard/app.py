@@ -416,6 +416,69 @@ def _blood_pressure_view(user_id: str):
         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
 
+def _fmt_duration_hm(minutes: float) -> str:
+    """540.4 -> '9h 0m' — whole minutes only; sub-minute precision would be
+    noise on a chart whose x-axis is already in whole minutes."""
+    total = round(minutes)
+    return f"{total // 60}h {total % 60}m"
+
+
+def _whoop_night_label(row) -> str:
+    """'Nov 08 — 9h 44m, Recovery 72' for the night dropdown."""
+    duration = _fmt_duration_hm((row["sleep_end"] - row["sleep_start"]).total_seconds() / 60)
+    recovery = f", Recovery {row['recovery_score']:.0f}" if pd.notna(row["recovery_score"]) else ""
+    return f"{row['sleep_start'].strftime('%b %d')} — {duration}{recovery}"
+
+
+def _whoop_sleep_view(user_id: str):
+    """WHOOP Sleep view: one night's heart rate across sleep, downsampled to
+    one reading per elapsed minute since sleep onset — mirrors WHOOP's own
+    Sleep tab chart (see transforms.whoop_minute_hr's docstring for why
+    that's anchored to sleep_start rather than the wall-clock minute).
+
+    sleep_start/sleep_end come from the Sleep object's own real onset/wake
+    fields (whoop_daily), not cycle_start/cycle_end — WHOOP's cycle boundary
+    is the START of the NEXT night's sleep, not this night's wake time, so
+    using it here would stretch the x-axis well past when the subject
+    actually woke up.
+    """
+    st.caption(
+        "Heart rate across one night's sleep, from WHOOP's official API. "
+        "Downsampled to one reading per minute (WHOOP's own Sleep tab does "
+        "the same) from the ~6-second-cadence data."
+    )
+    nights = data.load_whoop_nights(user_id)
+    if nights.empty:
+        st.info(f"No WHOOP sleep data yet for {user_id.title()}.")
+        return
+
+    labels = nights.apply(_whoop_night_label, axis=1)
+    selected = st.selectbox("Night", labels)
+    night = nights[labels == selected].iloc[0]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Duration", _fmt_duration_hm(
+        (night["sleep_end"] - night["sleep_start"]).total_seconds() / 60), border=True)
+    m2.metric("Recovery", _stat(night["recovery_score"]), border=True,
+             help="WHOOP's 0-100 recovery score for the cycle this sleep belongs to.")
+    m3.metric("Resting HR (bpm)", _stat(night["resting_hr"]), border=True)
+    m4.metric("HRV (ms)", _stat(night["hrv_rmssd_milli"], "{:.0f}"), border=True)
+
+    hr = data.load_whoop_hr_window(user_id, night["sleep_start"], night["sleep_end"])
+    if hr.empty:
+        st.warning("No intraday heart-rate readings for this night — "
+                   "whoop_hr_readings may not cover this date.")
+        return
+
+    minute_hr = transforms.whoop_minute_hr(hr, night["sleep_start"])
+    with st.container(border=True):
+        st.subheader("❤️ Overnight Heart Rate")
+        fig = charts.whoop_overnight_hr_fig(minute_hr, night["sleep_start"],
+                                            resting_hr=night["resting_hr"]
+                                            if pd.notna(night["resting_hr"]) else None)
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+
 @st.fragment
 def _paired_experiment(user_id: str, meal_a, meal_b, acts_a, acts_b):
     """Paired Meal Experiment: the slider and everything it drives.
@@ -518,13 +581,13 @@ if not auth.gate(user_id):
 # hence the `or "Single Meal"` fallback.
 view = st.segmented_control("View",
                             options=["Single Meal", "Paired Meal Experiment",
-                                     "Intensity × Sleep", "Blood Pressure"],
+                                     "Intensity × Sleep", "Blood Pressure", "WHOOP Sleep"],
                             default="Single Meal", label_visibility="collapsed") or "Single Meal"
 
-# Meals are only loaded for the meal-anchored views — Intensity × Sleep and
-# Blood Pressure run on Garmin/Omron data alone, so a subject with no logged
-# meals still gets them.
-if view not in ("Intensity × Sleep", "Blood Pressure"):
+# Meals are only loaded for the meal-anchored views — Intensity × Sleep,
+# Blood Pressure, and WHOOP Sleep run on Garmin/Omron/WHOOP data alone, so a
+# subject with no logged meals still gets them.
+if view not in ("Intensity × Sleep", "Blood Pressure", "WHOOP Sleep"):
     # Every load_* call below takes user_id, so switching subjects re-keys the
     # cache and re-queries rather than reusing the previous subject's frames.
     meals = data.load_meals(user_id)
@@ -539,6 +602,9 @@ if view == "Intensity × Sleep":
 
 elif view == "Blood Pressure":
     _blood_pressure_view(user_id)
+
+elif view == "WHOOP Sleep":
+    _whoop_sleep_view(user_id)
 
 elif view == "Single Meal":
     selected_label = st.selectbox("Meal", meals["_label"])

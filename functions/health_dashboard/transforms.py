@@ -82,6 +82,33 @@ def fill_date_gaps(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
     return out.reset_index()
 
 
+def whoop_minute_hr(hr: pd.DataFrame, sleep_start) -> pd.DataFrame:
+    """Downsample whoop_hr_readings' ~6-second epochs to one reading per
+    elapsed minute since sleep onset — matching WHOOP's own Sleep tab chart.
+
+    Anchored to sleep_start, not the wall-clock minute: bucketing by minutes
+    elapsed since sleep_start (confirmed live by comparing consecutive
+    readings' timestamps) rather than by calendar minute is what reproduces
+    WHOOP's own choice of which 6-second sample represents each minute — the
+    intra-minute offset is constant for one continuous night (60s is itself
+    a multiple of the 6s sampling grid) but differs night to night depending
+    on exactly when that night's sleep_start landed on the grid, which is
+    why a fixed offset like ":25 seconds past the minute" only looks
+    meaningful for one specific night and doesn't hold across others.
+
+    Takes the FIRST reading in each minute-bucket (not nearest-to-center) —
+    robust to an occasional missing sample without letting one gap shift
+    every later bucket's choice, the way positional slicing (every 10th row)
+    would.
+    """
+    if hr.empty:
+        return hr
+    sleep_start = pd.Timestamp(sleep_start)
+    df = hr.sort_values("ts").copy()
+    df["minute"] = ((df["ts"] - sleep_start).dt.total_seconds() // 60).astype(int)
+    return df.groupby("minute", as_index=False).first()
+
+
 def bp_daily_agg(df: pd.DataFrame) -> pd.DataFrame:
     """Collapse blood-pressure readings to one row per calendar day.
 

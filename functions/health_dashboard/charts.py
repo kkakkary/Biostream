@@ -529,6 +529,40 @@ def bp_fig(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def whoop_overnight_hr_fig(hr_minutes: pd.DataFrame, sleep_start,
+                           resting_hr: float | None = None) -> go.Figure:
+    """WHOOP Sleep view: heart rate across one night, already downsampled to
+    one reading per elapsed minute (transforms.whoop_minute_hr) — mirrors
+    WHOOP's own Sleep tab chart, right down to its "minutes since sleep
+    onset" x-axis rather than wall-clock time (same "minutes since the
+    anchor event" convention paired_cgm_overlay_fig uses for meals).
+
+    Single series, so RED (the house heart-rate hue) alone is enough — no
+    legend needed. No Sleep/Wake vlines: minute 0 and the curve's last point
+    already ARE those boundaries, unlike overnight_hrv_glucose_fig's
+    wall-clock chart where they're separate, meaningful marks.
+    """
+    sleep_start = pd.Timestamp(sleep_start)
+    minutes = (hr_minutes["ts"] - sleep_start).dt.total_seconds() / 60
+
+    fig = go.Figure(go.Scatter(
+        x=minutes, y=hr_minutes["hr_value"], mode="lines",
+        line=dict(color=RED, width=1.5),
+        hovertemplate="%{y:.0f} bpm<extra></extra>",
+    ))
+
+    if resting_hr is not None:
+        fig.add_hline(y=resting_hr, line=dict(color=INK_2, width=1.5, dash="dot"),
+                     annotation_text=f"Resting {resting_hr:.0f}",
+                     annotation_position="bottom right",
+                     annotation_font=dict(color=MUTED, size=11))
+
+    fig = _layout(fig, height=380)
+    fig.update_xaxes(title_text="minutes since sleep onset", title_font=dict(color=MUTED))
+    fig.update_yaxes(title_text="bpm", title_font=dict(color=MUTED))
+    return fig
+
+
 def bp_history_fig(daily: pd.DataFrame) -> go.Figure:
     """One point per day (transforms.bp_daily_agg): systolic naturally plots
     above diastolic, a thin vertical connector ties each day's pair together

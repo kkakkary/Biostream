@@ -141,3 +141,42 @@ def test_kpi_row_handles_sparse_history():
     assert kpi["steps_yday"] is None
     assert kpi["glucose_avg"] is None
     assert kpi["time_in_range"] is None
+
+
+def test_whoop_minute_hr_picks_one_reading_per_minute_anchored_to_sleep_onset():
+    # 6-second cadence starting at :25.240 past the minute — reproduces the
+    # exact live pattern that motivated this function: sleep_start's own
+    # intra-minute offset (here :25.240) recurs every 60s because 60 is
+    # itself a multiple of the 6s sampling grid, NOT because ":25" is a
+    # special/fixed value (a different sleep_start would land elsewhere).
+    sleep_start = pd.Timestamp("2026-11-08T07:43:25.240")
+    ts = pd.date_range(sleep_start, periods=20, freq="6s")   # 2 minutes of coverage
+    hr = pd.DataFrame({"ts": ts, "hr_value": range(100, 120)})
+
+    out = transforms.whoop_minute_hr(hr, sleep_start)
+
+    assert len(out) == 2
+    assert list(out["ts"]) == [sleep_start, sleep_start + pd.Timedelta(minutes=1)]
+    assert list(out["hr_value"]) == [100, 110]   # first sample of each minute-bucket
+
+
+def test_whoop_minute_hr_tolerates_a_missing_sample_without_desyncing_later_buckets():
+    # Minute 1's first two samples (indices 10, 11 -> elapsed 60s/66s) are
+    # missing (a brief dropout). Bucketing by elapsed time, not position,
+    # means minute 1 still gets a row (its next surviving sample, at elapsed
+    # 72s) instead of silently merging into minute 0 or shifting every later
+    # bucket out of phase the way positional slicing (every 10th row) would.
+    sleep_start = pd.Timestamp("2026-11-08T07:43:25.240")
+    ts = pd.date_range(sleep_start, periods=20, freq="6s").delete([10, 11])
+    hr = pd.DataFrame({"ts": ts, "hr_value": [v for i, v in enumerate(range(100, 120))
+                                              if i not in (10, 11)]})
+
+    out = transforms.whoop_minute_hr(hr, sleep_start)
+
+    assert list(out["ts"]) == [sleep_start, sleep_start + pd.Timedelta(seconds=72)]
+    assert list(out["hr_value"]) == [100, 112]
+
+
+def test_whoop_minute_hr_handles_empty_input():
+    empty = pd.DataFrame({"ts": pd.Series(dtype="datetime64[ns]"), "hr_value": []})
+    assert transforms.whoop_minute_hr(empty, pd.Timestamp("2026-11-08")).empty
